@@ -2,6 +2,8 @@
 
 这是审批中心使用的 FastAPI 后端脚手架。当前采用“微服务预备架构”：所有服务先放在一个 FastAPI 项目中运行，但每个服务模块都拥有独立的 `api` 接口层和 `src` 业务逻辑层，后续可以按需拆成真正的独立微服务。
 
+数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema。
+
 ## 项目结构
 
 ```text
@@ -17,18 +19,6 @@ backend/
       utils/                      # 公共工具函数
 
     server/                       # 后端服务模块集合
-      user/
-        api/
-          __init__.py             # 用户服务 API 聚合出口
-          user_api.py             # 用户服务接口层
-        src/
-          config/                 # 用户服务内部配置
-          schemas/                # 用户请求/响应模型
-          models/                 # 用户服务数据库模型
-          repository/             # 用户服务数据访问层
-          service/                # 用户服务业务逻辑层
-          utils/                  # 用户服务工具函数
-
       tenant/
         api/                      # 租户管理与 API Key 认证接口
         src/
@@ -36,16 +26,7 @@ backend/
           schemas/                # 请求响应模型
           repository/             # 数据访问层
           service/                # 租户与凭据业务逻辑
-          utils/                  # 密钥生成、哈希和加密工具
-
-      spider/
-        api/
-          __init__.py             # 爬虫服务 API 聚合出口
-          spider_api.py           # 爬虫服务接口层
-        src/
-          QCWY/                   # 前程无忧采集器
-          BOSSZP/                 # BOSS 直聘采集资料
-          LP/                     # 猎聘采集资料
+          utils/                  # API Key 生成和回调凭据加密工具
 ```
 
 ## 分层约定
@@ -54,28 +35,19 @@ backend/
 
 ```text
 api/     对外 API 接口层，只处理请求参数、响应包装、依赖注入
-src/     服务内部业务逻辑、采集器、数据库操作、模型和工具
+src/     服务内部业务逻辑、数据库操作、模型和工具
 common/  多个服务都会用到的公共能力
 ```
 
-例如用户服务：
+例如租户服务：
 
 ```text
-app/server/user/api/user_api.py
-app/server/user/src/config/user_config.py
-app/server/user/src/schemas/request.py
-app/server/user/src/schemas/response.py
-app/server/user/src/models/user_model.py
-app/server/user/src/repository/user_repository.py
-app/server/user/src/service/user_service.py
-app/server/user/src/utils/password.py
-```
-
-例如爬虫服务：
-
-```text
-app/server/spider/api/spider_api.py
-app/server/spider/src/QCWY
+app/server/tenant/api/tenant_api.py
+app/server/tenant/src/schemas/tenant_schema.py
+app/server/tenant/src/models/tenant_model.py
+app/server/tenant/src/repository/tenant_repository.py
+app/server/tenant/src/service/tenant_service.py
+app/server/tenant/src/utils/credential.py
 ```
 
 ## 启动方式
@@ -86,14 +58,6 @@ app/server/spider/src/QCWY
 cd D:\work\DaiJun\ZhiHuiBan\ShenPi\backend
 pip install -r requirements.txt
 ```
-
-如果要使用 Playwright 自带 Chromium 浏览器执行爬虫，可以继续安装浏览器：
-
-```powershell
-playwright install chromium
-```
-
-如果已经在爬虫配置中指定本机 Chrome/Edge 路径，可以跳过这一步。
 
 启动服务：
 
@@ -149,14 +113,12 @@ APPROVAL_CREDENTIAL_MASTER_KEY=生成的Fernet密钥
 python -B -m app.common.db.init_db
 ```
 
-该命令适用于开发期首次初始化。正式环境结构变更应切换到数据库迁移工具。
+该命令会先执行 `CREATE SCHEMA IF NOT EXISTS tenant`，然后在其中创建租户模块数据表。它适用于开发期首次初始化；正式环境结构变更应切换到数据库迁移工具。
 
 ## 当前接口
 
 ```text
 GET  /
-POST /user/login
-POST /user/register
 POST /api/admin/tenants
 GET  /api/admin/tenants
 GET  /api/admin/tenants/{tenant_id}
@@ -175,12 +137,10 @@ GET  /api/tenant/context
 ## 后续模块规划
 
 ```text
-server/user       用户登录注册
-server/spider     招聘数据采集
-server/job        岗位库与岗位查询
-server/agent      LangGraph 分析流程
-server/resume     简历解析
-server/learning   学习计划与成长闭环
+server/person     审批人员与租户成员
+server/process    审批流配置
+server/approval   审批实例、任务与操作记录
+server/callback   业务动作回调与执行记录
 ```
 
-当前先保持单体部署。等 `spider`、`agent` 等模块复杂后，再把对应目录单独拆成进程或仓库。
+当前先保持单体部署，按模块边界逐步实现。

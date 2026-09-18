@@ -8,6 +8,10 @@ from sqlalchemy import Column, DateTime, Text
 from sqlmodel import Field, SQLModel
 
 
+# 每个 server 使用独立的 PostgreSQL Schema；租户模块统一放在 tenant 下。
+TENANT_DB_SCHEMA = "tenant"
+
+
 def utc_now() -> datetime:
     """返回带 UTC 时区的当前时间。"""
 
@@ -18,6 +22,7 @@ class Tenant(SQLModel, table=True):
     """接入审批中心的业务系统租户。"""
 
     __tablename__ = "tenant"
+    __table_args__ = {"schema": TENANT_DB_SCHEMA}
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     code: str = Field(max_length=64, unique=True, index=True)
@@ -33,9 +38,10 @@ class TenantApiKey(SQLModel, table=True):
     """业务系统调用审批 API 使用的 API Key。"""
 
     __tablename__ = "tenant_api_key"
+    __table_args__ = {"schema": TENANT_DB_SCHEMA}
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    tenant_id: UUID = Field(foreign_key="tenant.id", index=True)
+    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
     name: str = Field(max_length=100)
     # 第一版按项目约定直接保存完整明文，便于管理页面查询和复制。
     api_key: str = Field(max_length=128, unique=True, index=True)
@@ -51,9 +57,10 @@ class TenantCallbackCredential(SQLModel, table=True):
     """审批中心向业务系统发送回调时使用的签名凭据。"""
 
     __tablename__ = "tenant_callback_credential"
+    __table_args__ = {"schema": TENANT_DB_SCHEMA}
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
-    tenant_id: UUID = Field(foreign_key="tenant.id", index=True)
+    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
     name: str = Field(max_length=100)
     key_id: str = Field(max_length=64, unique=True, index=True)
     # 回调签名时需要取回原始密钥，因此保存由应用主密钥加密后的密文，而不是不可逆哈希。

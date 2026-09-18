@@ -26,27 +26,6 @@ class ChatHistory(SQLModel, table=True):
     content: str 
     create_time: datetime 
 
-# 定义用户会话表
-class User_Session(SQLModel, table=True):
-    __tablename__ = "user_session"
-
-    user_id: int = Field(foreign_key="user.id")
-    session_id: str = Field(primary_key=True, index=True)
-    session_title: str
-    create_time: datetime = Field(default_factory = datetime.now)
-    last_time: datetime = Field(default_factory = datetime.now)
-
-# 定义用户表
-class User(SQLModel, table=True):
-    __tablename__ = "user"
-
-    id: int = Field(primary_key=True, index=True)
-    name: str
-    email: str = Field(unique=True, index=True)
-    password: str
-    create_time: datetime = Field(default_factory = datetime.now)
-    is_delete: str
-
 # 定义向量集合表
 class Langchain_Pg_Collection(SQLModel, table=True):
     __tablename__ = "langchain_pg_collection"

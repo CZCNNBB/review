@@ -24,8 +24,7 @@ pandas==2.3.3
 openpyxl==3.1.5
 lxml==6.0.2
 
-# Auth / logging
-PyJWT==2.10.1
+# Security / logging
 loguru==0.7.3
 cryptography==49.0.0
 
