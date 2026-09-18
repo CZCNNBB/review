@@ -1,48 +1,55 @@
+"""审批中心 PostgreSQL 数据库配置。"""
 
-# ------------------------关系型数据库-------------------------
-# 配置Mysql数据库连接
 import os
 
-from elasticsearch import Elasticsearch
-Mysql_CONFIG = {
-    "host": os.getenv("MYSQL_HOST"),
-    "port": int(os.getenv("MYSQL_PORT")),
-    "username": os.getenv("MYSQL_USER"),
-    "password": os.getenv("MYSQL_PASSWORD"),
-    "database": os.getenv("MYSQL_DATABASE"),
-}
+from dotenv import load_dotenv
+from sqlalchemy.engine import URL
 
-# 数据库连接字符串
-connection_string = f"mysql+pymysql://{Mysql_CONFIG['username']}:{Mysql_CONFIG['password']}@{Mysql_CONFIG['host']}:{Mysql_CONFIG['port']}/{Mysql_CONFIG['database']}"
+# 独立执行测试、初始化脚本时也需要主动加载 backend/.env。
+# override=False 可以保留部署平台在进程环境中注入的同名变量。
+load_dotenv(override=False)
 
-# 配置Postgres数据库连接
+
+def get_environment(name: str, default: str) -> str:
+    """读取非空字符串环境变量，空值或未配置时使用默认值。"""
+
+    raw_value = os.getenv(name)
+    if raw_value is None:
+        return default
+
+    normalized_value = raw_value.strip()
+    if not normalized_value:
+        return default
+
+    return normalized_value
+
+
+def get_int_environment(name: str, default: int) -> int:
+    """读取整数环境变量，空值或未配置时使用默认值。"""
+
+    raw_value = os.getenv(name)
+    if raw_value is None or not raw_value.strip():
+        return default
+
+    return int(raw_value)
+
+
+# 初期只使用一个 PostgreSQL 数据库。配置统一集中在这里，避免各模块自行拼接地址。
 postgres_db_CONFIG = {
-    "host": os.getenv("POSTGRES_HOST"),
-    "port": int(os.getenv("POSTGRES_PORT")),
-    "username": os.getenv("POSTGRES_USER"),
-    "password": os.getenv("POSTGRES_PASSWORD"),
-    "database": os.getenv("POSTGRES_DATABASE"),
+    "host": get_environment("POSTGRES_HOST", "127.0.0.1"),
+    "port": get_int_environment("POSTGRES_PORT", 5432),
+    "username": get_environment("POSTGRES_USER", "postgres"),
+    "password": os.getenv("POSTGRES_PASSWORD", ""),
+    "database": get_environment("POSTGRES_DATABASE", "approval_center"),
 }
-# 数据库连接字符串
-postgres_connection_string = f"postgresql://{postgres_db_CONFIG['username']}:{postgres_db_CONFIG['password']}@{postgres_db_CONFIG['host']}:{postgres_db_CONFIG['port']}/{postgres_db_CONFIG['database']}"
 
-
-# ------------------------向量数据库-------------------------
-
-# 配置向量数据库PGvector数据库连接
-PGvector_db_CONFIG = {
-    "host": os.getenv("PGVECTOR_HOST"),
-    "port": int(os.getenv("PGVECTOR_PORT")),
-    "username": os.getenv("PGVECTOR_USER"),
-    "password": os.getenv("PGVECTOR_PASSWORD"),
-    "database": os.getenv("PGVECTOR_DATABASE"),
-}
-PGvector_connection_string =f"postgresql+psycopg://{PGvector_db_CONFIG['username']}:{PGvector_db_CONFIG['password']}@{PGvector_db_CONFIG['host']}:{PGvector_db_CONFIG['port']}/{PGvector_db_CONFIG['database']}"
-
-
-# 配置Elasticsearch数据库连接
-es_client = Elasticsearch(
-    hosts=[os.getenv("ES_HOST")]  # es主机地址
+# 使用 SQLAlchemy URL 负责特殊字符转义，数据库密码包含 @、: 等字符时也能正确连接。
+postgres_connection_string = URL.create(
+    drivername="postgresql+psycopg2",
+    username=postgres_db_CONFIG["username"],
+    password=postgres_db_CONFIG["password"] or None,
+    host=postgres_db_CONFIG["host"],
+    port=postgres_db_CONFIG["port"],
+    database=postgres_db_CONFIG["database"],
 )
-ES_HOST = os.getenv("ES_HOST")
-ES_VERSION = os.getenv("ES_VERSION")
+

@@ -2,8 +2,8 @@ import app.bootstrap  # 初始化异步环境, 必须最先导入
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.server.tenant.api import router as tenant_router
 from app.server.user.api import router as user_router
-from app.server.spider.api import router as spider_router
 import uvicorn
 
 
@@ -23,8 +23,8 @@ def create_app() -> FastAPI:
     )
     
     # 注册各微服务模块的接口层。每个服务只通过自己的 api 聚合出口对外暴露接口。
+    app.include_router(tenant_router, prefix="/api", tags=["租户模块"])
     app.include_router(user_router, prefix="/user", tags=["user模块"])
-    app.include_router(spider_router, prefix="/spider", tags=["spider模块"])
     
     @app.get("/")
     def root_endpoint():
@@ -48,8 +48,8 @@ if __name__ == "__main__":
     # 生产环境配置（多进程）
     uvicorn.run(
         "app.main:create_app",   # 用 factory 模式, 必须在 uvicorn.run 中指定 factory=True
-        host=os.getenv("FastApi_host","127.0.0.1"),   
-        port=int(os.getenv("FastApi_port",8090)),
+        host=os.getenv("FASTAPI_HOST", "127.0.0.1"),
+        port=int(os.getenv("FASTAPI_PORT", "8090")),
         loop="asyncio",     # 使用 asyncio 事件循环
         workers=1,          # 启动的进程个数
         reload=True,        # 自动重载代码变更，异步下需要设置为 True

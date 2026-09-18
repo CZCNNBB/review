@@ -1,6 +1,6 @@
 """租户模块的 Pydantic 请求与响应模型。"""
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID
 
@@ -22,6 +22,15 @@ class TenantCreateRequest(BaseModel):
 
         return value.upper()
 
+    @field_validator("callback_base_url")
+    @classmethod
+    def validate_callback_base_url(cls, value: AnyHttpUrl) -> AnyHttpUrl:
+        """回调基础地址不能包含查询参数或片段。"""
+
+        if value.query or value.fragment:
+            raise ValueError("回调基础地址不能包含查询参数或片段")
+        return value
+
 
 class TenantUpdateRequest(BaseModel):
     """更新租户请求。"""
@@ -38,6 +47,28 @@ class TenantUpdateRequest(BaseModel):
         if not self.model_fields_set:
             raise ValueError("至少需要提供一个更新字段")
         return self
+
+    @field_validator("callback_base_url")
+    @classmethod
+    def validate_callback_base_url(cls, value: AnyHttpUrl | None) -> AnyHttpUrl | None:
+        """更新后的回调基础地址不能包含查询参数或片段。"""
+
+        if value and (value.query or value.fragment):
+            raise ValueError("回调基础地址不能包含查询参数或片段")
+        return value
+
+
+def validate_future_datetime(value: datetime | None) -> datetime | None:
+    """校验可选过期时间必须晚于当前时间。"""
+
+    if value is None:
+        return None
+    normalized_value = value
+    if normalized_value.tzinfo is None:
+        normalized_value = normalized_value.replace(tzinfo=timezone.utc)
+    if normalized_value <= datetime.now(timezone.utc):
+        raise ValueError("过期时间必须晚于当前时间")
+    return value
 
 
 class TenantResponse(BaseModel):
@@ -61,16 +92,23 @@ class ApiKeyCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     expires_at: Optional[datetime] = None
 
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiration(cls, value: datetime | None) -> datetime | None:
+        """校验 API Key 过期时间。"""
+
+        return validate_future_datetime(value)
+
 
 class ApiKeyResponse(BaseModel):
-    """API Key 元数据响应，不包含密钥明文和哈希。"""
+    """API Key 响应，包含管理页面可查看的完整明文。"""
 
     model_config = ConfigDict(from_attributes=True)
 
     id: UUID
     tenant_id: UUID
     name: str
-    key_prefix: str
+    api_key: str
     status: str
     expires_at: Optional[datetime]
     last_used_at: Optional[datetime]
@@ -79,9 +117,7 @@ class ApiKeyResponse(BaseModel):
 
 
 class ApiKeyCreatedResponse(ApiKeyResponse):
-    """API Key 创建响应，api_key 只在本次响应中展示。"""
-
-    api_key: str
+    """API Key 创建响应，与详情响应保持相同字段。"""
 
 
 class CallbackCredentialCreateRequest(BaseModel):
@@ -89,6 +125,13 @@ class CallbackCredentialCreateRequest(BaseModel):
 
     name: str = Field(min_length=1, max_length=100)
     expires_at: Optional[datetime] = None
+
+    @field_validator("expires_at")
+    @classmethod
+    def validate_expiration(cls, value: datetime | None) -> datetime | None:
+        """校验回调凭据过期时间。"""
+
+        return validate_future_datetime(value)
 
 
 class CallbackCredentialResponse(BaseModel):

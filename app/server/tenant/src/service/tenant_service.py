@@ -22,8 +22,6 @@ from app.server.tenant.src.service.exceptions import (
 )
 from app.server.tenant.src.utils.credential import (
     CallbackSecretCipher,
-    api_key_matches,
-    extract_api_key_prefix,
     generate_api_key,
     generate_callback_secret,
 )
@@ -102,25 +100,24 @@ class TenantService:
         name: str,
         expires_at: datetime | None,
         db: Session,
-    ) -> tuple[TenantApiKey, str]:
-        """为租户生成新的 API Key，明文只随本次调用返回。"""
+    ) -> TenantApiKey:
+        """为租户生成新的 API Key，并以明文保存。"""
 
         self.get_tenant(tenant_id, db)
         generated_key = generate_api_key()
         api_key = TenantApiKey(
             tenant_id=tenant_id,
             name=name.strip(),
-            key_prefix=generated_key.key_prefix,
-            key_hash=generated_key.key_hash,
+            api_key=generated_key,
             expires_at=expires_at,
         )
         self.repository.add_api_key(api_key, db)
-        self._commit_or_conflict(db, "API Key 前缀冲突，请重试")
+        self._commit_or_conflict(db, "API Key 冲突，请重试")
         db.refresh(api_key)
-        return api_key, generated_key.plaintext
+        return api_key
 
     def list_api_keys(self, tenant_id: UUID, db: Session) -> list[TenantApiKey]:
-        """查询租户 API Key 元数据，不返回明文和哈希。"""
+        """查询租户 API Key，包含管理页面所需的明文。"""
 
         self.get_tenant(tenant_id, db)
         return self.repository.list_api_keys(tenant_id, db)
@@ -142,12 +139,11 @@ class TenantService:
     def authenticate_api_key(self, plaintext_api_key: str, db: Session) -> tuple[Tenant, TenantApiKey]:
         """验证 API Key 并返回可信租户上下文。"""
 
-        key_prefix = extract_api_key_prefix(plaintext_api_key)
-        if not key_prefix:
+        if not plaintext_api_key:
             raise InvalidApiKeyError("API Key 格式错误")
 
-        api_key = self.repository.get_api_key_by_prefix(key_prefix, db)
-        if not api_key or not api_key_matches(plaintext_api_key, api_key.key_hash):
+        api_key = self.repository.get_api_key_by_value(plaintext_api_key, db)
+        if not api_key:
             raise InvalidApiKeyError("API Key 无效")
         if api_key.status != "ACTIVE":
             raise InvalidApiKeyError("API Key 已停用或撤销")

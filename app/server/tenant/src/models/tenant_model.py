@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, Text
+from sqlalchemy import Column, DateTime, Text
 from sqlmodel import Field, SQLModel
 
 
@@ -25,25 +25,25 @@ class Tenant(SQLModel, table=True):
     description: Optional[str] = Field(default=None, max_length=500)
     callback_base_url: str = Field(max_length=500)
     status: str = Field(default="ENABLED", max_length=20, index=True)
-    created_at: datetime = Field(default_factory=utc_now)
-    updated_at: datetime = Field(default_factory=utc_now)
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
 
 
 class TenantApiKey(SQLModel, table=True):
-    """业务系统调用审批 API 使用的 API Key 元数据。"""
+    """业务系统调用审批 API 使用的 API Key。"""
 
     __tablename__ = "tenant_api_key"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: UUID = Field(foreign_key="tenant.id", index=True)
     name: str = Field(max_length=100)
-    key_prefix: str = Field(max_length=32, unique=True, index=True)
-    key_hash: str = Field(max_length=128)
+    # 第一版按项目约定直接保存完整明文，便于管理页面查询和复制。
+    api_key: str = Field(max_length=128, unique=True, index=True)
     status: str = Field(default="ACTIVE", max_length=20, index=True)
-    expires_at: Optional[datetime] = Field(default=None)
-    last_used_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=utc_now)
-    revoked_at: Optional[datetime] = Field(default=None)
+    expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    last_used_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+    revoked_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     created_by: Optional[UUID] = Field(default=None)
 
 
@@ -59,7 +59,7 @@ class TenantCallbackCredential(SQLModel, table=True):
     # 回调签名时需要取回原始密钥，因此保存由应用主密钥加密后的密文，而不是不可逆哈希。
     secret_ciphertext: str = Field(sa_column=Column(Text, nullable=False))
     status: str = Field(default="ACTIVE", max_length=20, index=True)
-    expires_at: Optional[datetime] = Field(default=None)
-    created_at: datetime = Field(default_factory=utc_now)
-    revoked_at: Optional[datetime] = Field(default=None)
+    expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+    revoked_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     created_by: Optional[UUID] = Field(default=None)

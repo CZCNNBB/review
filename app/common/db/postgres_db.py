@@ -1,4 +1,5 @@
-# ----------------postgres数据库操作-------------------
+"""PostgreSQL 数据库引擎与会话工厂。"""
+
 from sqlmodel import Session, create_engine
 from app.common.config.datebase_config import postgres_connection_string
 
@@ -13,45 +14,15 @@ engine = create_engine(
 )
 
 
-def get_postgres_engine(): 
-    """
-    FastAPI 依赖注入使用的生成器
-    """
-    # 使用with语句确保数据库会话在请求结束后自动关闭
+def get_postgres_engine():
+    """为 FastAPI 请求提供数据库会话，并在请求结束后自动关闭。"""
+
+    # 使用 with 语句保证接口正常返回或抛出异常时都能释放数据库连接。
     with Session(engine) as db:
         yield db
 
 
 def get_db_session() -> Session:
-    """
-    普通函数调用使用的 Session 工厂
-    注意：调用者需要手动关闭 Session (使用 with 语句或 .close())
-    """
+    """创建普通函数使用的会话，调用者负责关闭该会话。"""
+
     return Session(engine)
-        
-
-# if __name__ == "__main__":
-#     # 测试数据库连接
-#     postgres_db_CONFIG = {
-#     "host": "192.168.8.151",
-#     "port": 5432,
-#     "username": "remote_super",
-#     "password": "himice2024",
-#     "database": "agent",
-# }
-
-#     connection_string = f"postgresql://{postgres_db_CONFIG['username']}:{postgres_db_CONFIG['password']}@{postgres_db_CONFIG['host']}:{postgres_db_CONFIG['port']}/{postgres_db_CONFIG['database']}"
-#     manager = PostgresDatabase(connection_string)
-#     print(manager.get_table_name())
-#     print(manager.insert_file_info({
-#         "id": "123456",
-#         "name": "test.txt",
-#         "path": "/tmp/test.txt",
-#         "out_time": "2024-01-01",
-#         "size": 1024,
-#         "extension": "txt",
-#         "mime_type": "text/plain",
-#         "created_by": "user123",
-#         "created_at": "2024-01-01 00:00:00"
-#     }))
-#     print(manager.get_file_info("123456"))

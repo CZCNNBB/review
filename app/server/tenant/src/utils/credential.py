@@ -1,11 +1,7 @@
-"""API Key 生成、校验和回调密钥加密工具。"""
+"""API Key 生成和回调密钥加密工具。"""
 
-import base64
-import hashlib
-import hmac
 import os
 import secrets
-from dataclasses import dataclass
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -13,53 +9,12 @@ from cryptography.fernet import Fernet, InvalidToken
 API_KEY_PREFIX = "appr_live"
 
 
-@dataclass(frozen=True)
-class GeneratedApiKey:
-    """新生成 API Key 的明文、查询前缀和哈希。"""
-
-    plaintext: str
-    key_prefix: str
-    key_hash: str
-
-
-def hash_api_key(api_key: str) -> str:
-    """计算高熵 API Key 的 SHA-256 哈希。"""
-
-    return hashlib.sha256(api_key.encode("utf-8")).hexdigest()
-
-
-def generate_api_key() -> GeneratedApiKey:
-    """生成只展示一次的高熵 API Key。"""
+def generate_api_key() -> str:
+    """生成业务系统调用审批中心时使用的高熵 API Key。"""
 
     key_prefix = secrets.token_hex(4)
     secret = secrets.token_urlsafe(32)
-    plaintext = f"{API_KEY_PREFIX}_{key_prefix}.{secret}"
-    return GeneratedApiKey(
-        plaintext=plaintext,
-        key_prefix=key_prefix,
-        key_hash=hash_api_key(plaintext),
-    )
-
-
-def extract_api_key_prefix(api_key: str) -> str | None:
-    """从 API Key 中解析数据库查询前缀，格式错误时返回 None。"""
-
-    marker = f"{API_KEY_PREFIX}_"
-    if not api_key.startswith(marker) or "." not in api_key:
-        return None
-
-    prefix_and_secret = api_key[len(marker):]
-    key_prefix, secret = prefix_and_secret.split(".", 1)
-    if not key_prefix or not secret:
-        return None
-    return key_prefix
-
-
-def api_key_matches(api_key: str, expected_hash: str) -> bool:
-    """使用恒定时间比较校验 API Key 哈希。"""
-
-    actual_hash = hash_api_key(api_key)
-    return hmac.compare_digest(actual_hash, expected_hash)
+    return f"{API_KEY_PREFIX}_{key_prefix}.{secret}"
 
 
 def generate_callback_secret() -> tuple[str, str]:
@@ -109,10 +64,3 @@ class CallbackSecretCipher:
             return self._fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
         except InvalidToken as exc:
             raise ValueError("回调签名密钥无法解密") from exc
-
-
-def generate_master_key_command_value() -> str:
-    """为初始化脚本提供主密钥生成结果。"""
-
-    raw_key = os.urandom(32)
-    return base64.urlsafe_b64encode(raw_key).decode("utf-8")

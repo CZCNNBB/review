@@ -27,6 +27,7 @@ lxml==6.0.2
 # Auth / logging
 PyJWT==2.10.1
 loguru==0.7.3
+cryptography==49.0.0
 
 # Example AI / document utilities kept for the current common demo code
 langchain-core==1.0.6

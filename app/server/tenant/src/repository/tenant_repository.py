@@ -46,10 +46,10 @@ class TenantRepository:
 
         return db.get(TenantApiKey, api_key_id)
 
-    def get_api_key_by_prefix(self, key_prefix: str, db: Session) -> TenantApiKey | None:
-        """按明文中携带的安全前缀查询 API Key 元数据。"""
+    def get_api_key_by_value(self, api_key: str, db: Session) -> TenantApiKey | None:
+        """按完整明文查询 API Key。"""
 
-        statement = select(TenantApiKey).where(TenantApiKey.key_prefix == key_prefix)
+        statement = select(TenantApiKey).where(TenantApiKey.api_key == api_key)
         return db.exec(statement).first()
 
     def list_api_keys(self, tenant_id: UUID, db: Session) -> list[TenantApiKey]:

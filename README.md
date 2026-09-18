@@ -1,6 +1,6 @@
-# 就业指导 AI 平台 Backend
+# 审批中心 Backend
 
-这是就业指导 AI 平台的后端项目。当前采用“微服务预备架构”：所有服务先放在一个 FastAPI 项目中运行，但每个服务模块都拥有独立的 `api` 接口层和 `src` 业务逻辑层，后续可以按需拆成真正的独立微服务。
+这是审批中心使用的 FastAPI 后端脚手架。当前采用“微服务预备架构”：所有服务先放在一个 FastAPI 项目中运行，但每个服务模块都拥有独立的 `api` 接口层和 `src` 业务逻辑层，后续可以按需拆成真正的独立微服务。
 
 ## 项目结构
 
@@ -28,6 +28,15 @@ backend/
           repository/             # 用户服务数据访问层
           service/                # 用户服务业务逻辑层
           utils/                  # 用户服务工具函数
+
+      tenant/
+        api/                      # 租户管理与 API Key 认证接口
+        src/
+          models/                 # 租户、API Key、回调凭据模型
+          schemas/                # 请求响应模型
+          repository/             # 数据访问层
+          service/                # 租户与凭据业务逻辑
+          utils/                  # 密钥生成、哈希和加密工具
 
       spider/
         api/
@@ -74,7 +83,7 @@ app/server/spider/src/QCWY
 安装依赖：
 
 ```powershell
-cd D:\study\get_job_data\backend
+cd D:\work\DaiJun\ZhiHuiBan\ShenPi\backend
 pip install -r requirements.txt
 ```
 
@@ -98,14 +107,70 @@ python -m app.main
 uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8090 --reload
 ```
 
+### 环境变量
+
+现有 `.env` 已按审批中心需求重置。开发前填写 PostgreSQL 配置：
+
+```text
+POSTGRES_HOST=127.0.0.1
+POSTGRES_PORT=5432
+POSTGRES_USER=postgres
+POSTGRES_PASSWORD=你的数据库密码
+POSTGRES_DATABASE=approval_center
+FASTAPI_HOST=127.0.0.1
+FASTAPI_PORT=8090
+```
+
+租户管理接口使用临时管理密钥，后续接入项目平台管理员身份后替换：
+
+```text
+APPROVAL_ADMIN_KEY=请使用高强度随机值
+```
+
+回调签名密钥需要使用应用主密钥加密保存。可以执行：
+
+```powershell
+python -B -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+将结果写入：
+
+```text
+APPROVAL_CREDENTIAL_MASTER_KEY=生成的Fernet密钥
+```
+
+不要将实际密钥提交到代码仓库。
+
+### 初始化数据库表
+
+确认 PostgreSQL 环境变量配置完成后执行：
+
+```powershell
+python -B -m app.common.db.init_db
+```
+
+该命令适用于开发期首次初始化。正式环境结构变更应切换到数据库迁移工具。
+
 ## 当前接口
 
 ```text
 GET  /
 POST /user/login
 POST /user/register
-GET  /spider/health
+POST /api/admin/tenants
+GET  /api/admin/tenants
+GET  /api/admin/tenants/{tenant_id}
+PATCH /api/admin/tenants/{tenant_id}
+POST /api/admin/tenants/{tenant_id}/api-keys
+GET  /api/admin/tenants/{tenant_id}/api-keys
+POST /api/admin/tenants/{tenant_id}/api-keys/{api_key_id}/revoke
+POST /api/admin/tenants/{tenant_id}/callback-credentials
+GET  /api/admin/tenants/{tenant_id}/callback-credentials
+POST /api/admin/tenants/{tenant_id}/callback-credentials/{credential_id}/revoke
+GET  /api/tenant/context
 ```
+
+`/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。
 
 ## 后续模块规划
 
