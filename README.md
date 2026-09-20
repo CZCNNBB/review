@@ -4,6 +4,12 @@
 
 数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema。
 
+## 设计文档
+
+- `docs/审批中心整体设计.md`：系统边界、模块划分、核心链路和实施顺序。
+- `docs/租户模块设计.md`：已经完成的租户模块设计。
+- `docs/人员与组织模块设计.md`：下一阶段人员、租户成员和部门设计。
+
 ## 项目结构
 
 ```text
@@ -130,6 +136,18 @@ POST /api/admin/tenants/{tenant_id}/callback-credentials
 GET  /api/admin/tenants/{tenant_id}/callback-credentials
 POST /api/admin/tenants/{tenant_id}/callback-credentials/{credential_id}/revoke
 GET  /api/tenant/context
+POST /api/admin/persons
+GET  /api/admin/persons
+GET  /api/admin/persons/{person_id}
+PATCH /api/admin/persons/{person_id}
+POST /api/admin/tenants/{tenant_id}/departments
+GET  /api/admin/tenants/{tenant_id}/departments
+PATCH /api/admin/tenants/{tenant_id}/departments/{department_id}
+POST /api/admin/tenants/{tenant_id}/members
+GET  /api/admin/tenants/{tenant_id}/members
+GET  /api/admin/tenants/{tenant_id}/members/resolve
+GET  /api/admin/tenants/{tenant_id}/members/{member_id}
+PATCH /api/admin/tenants/{tenant_id}/members/{member_id}
 ```
 
 `/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。

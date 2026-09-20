@@ -2,6 +2,7 @@ import app.bootstrap  # 初始化异步环境, 必须最先导入
 import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.server.organization.api import router as organization_router
 from app.server.tenant.api import router as tenant_router
 import uvicorn
 
@@ -23,6 +24,7 @@ def create_app() -> FastAPI:
     
     # 注册各微服务模块的接口层。每个服务只通过自己的 api 聚合出口对外暴露接口。
     app.include_router(tenant_router, prefix="/api", tags=["租户模块"])
+    app.include_router(organization_router, prefix="/api", tags=["人员与组织模块"])
     
     @app.get("/")
     def root_endpoint():

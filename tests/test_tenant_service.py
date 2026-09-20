@@ -29,7 +29,12 @@ class TenantServiceTestCase(unittest.TestCase):
             connect_args={"check_same_thread": False},
             poolclass=StaticPool,
             # SQLite 没有 PostgreSQL Schema，测试时将 tenant 映射到默认命名空间。
-            execution_options={"schema_translate_map": {"tenant": None}},
+            execution_options={
+                "schema_translate_map": {
+                    "tenant": None,
+                    "organization": None,
+                }
+            },
         )
         SQLModel.metadata.create_all(self.engine)
         self.db = Session(self.engine)
