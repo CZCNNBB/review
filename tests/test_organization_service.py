@@ -1,28 +1,38 @@
-"""人员与组织模块业务规则测试。"""
+"""人员组织核心能力与租户作用域测试。"""
 
+import os
 import unittest
 
 from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine
 
-from app.server.organization.src.models import Department, Person, TenantMember
+from app.common.scope import GlobalResourceScope
+from app.server.tenant.api.dependencies import build_resource_scope_dependency
+from app.server.organization.src.models import Department, DepartmentMember, Person
 from app.server.organization.src.schemas.organization_schema import (
     DepartmentCreateRequest,
     PersonCreateRequest,
-    TenantMemberCreateRequest,
-)
-from app.server.organization.src.service.exceptions import (
-    OrganizationConflictError,
-    OrganizationNotFoundError,
 )
 from app.server.organization.src.service.organization_service import OrganizationService
-from app.server.tenant.src.models import Tenant, TenantApiKey, TenantCallbackCredential
+from app.server.tenant.src.models import (
+    DepartmentBinding,
+    PersonBinding,
+    Tenant,
+    TenantApiKey,
+    TenantCallbackCredential,
+)
 from app.server.tenant.src.schemas.tenant_schema import TenantCreateRequest
+from app.server.tenant.src.scope.tenant_scope import (
+    RESOURCE_PERSON,
+    TenantResourceAccessError,
+    TenantResourceScope,
+    create_resource_scope,
+)
 from app.server.tenant.src.service.tenant_service import TenantService
 
 
 class OrganizationServiceTestCase(unittest.TestCase):
-    """验证人员、部门和租户成员的隔离与唯一性规则。"""
+    """验证核心组织数据与可选租户作用域相互独立。"""
 
     def setUp(self) -> None:
         """创建支持多 Schema 映射的 SQLite 内存数据库。"""
@@ -40,106 +50,126 @@ class OrganizationServiceTestCase(unittest.TestCase):
         )
         SQLModel.metadata.create_all(self.engine)
         self.db = Session(self.engine)
-        self.tenant_service = TenantService()
         self.organization_service = OrganizationService()
+        self.tenant_service = TenantService()
+        self.previous_tenancy_enabled = os.environ.get("TENANCY_ENABLED")
+        os.environ["TENANCY_ENABLED"] = "true"
 
     def tearDown(self) -> None:
-        """关闭测试数据库资源。"""
+        """关闭数据库资源并恢复租户开关。"""
 
         self.db.close()
         self.engine.dispose()
+        if self.previous_tenancy_enabled is None:
+            os.environ.pop("TENANCY_ENABLED", None)
+        else:
+            os.environ["TENANCY_ENABLED"] = self.previous_tenancy_enabled
 
-    def create_tenant(self, code: str, name: str) -> Tenant:
-        """创建测试使用的业务系统租户。"""
+    def test_global_mode_lists_resources_without_tenant_tables(self) -> None:
+        """全局作用域不需要租户绑定即可查询人员和部门。"""
 
-        return self.tenant_service.create_tenant(
+        person = self.organization_service.create_person(
+            PersonCreateRequest(name="张三"),
+            self.db,
+        )
+        department = self.organization_service.create_department(
+            DepartmentCreateRequest(code="FINANCE", name="财务部"),
+            self.db,
+        )
+
+        persons = self.organization_service.list_persons(
+            self.db,
+            scope=GlobalResourceScope(),
+        )
+        departments = self.organization_service.list_departments(
+            self.db,
+            scope=GlobalResourceScope(),
+        )
+
+        self.assertEqual([item.id for item in persons], [person.id])
+        self.assertEqual([item.id for item in departments], [department.id])
+
+    def test_tenant_scope_filters_and_checks_person_access(self) -> None:
+        """租户作用域只返回当前租户已经绑定的人员。"""
+
+        tenant = self.tenant_service.create_tenant(
             TenantCreateRequest(
-                code=code,
-                name=name,
-                callback_base_url=f"https://{code.lower()}.example.com/approval",
+                code="FINANCE",
+                name="财务系统",
+                callback_base_url="https://finance.example.com/approval",
             ),
             self.db,
         )
-
-    def test_person_can_join_multiple_tenants_and_resolve_external_identity(self) -> None:
-        """同一人员可加入多个租户，并按租户解析外部用户标识。"""
-
-        finance_tenant = self.create_tenant("FINANCE", "财务系统")
-        contract_tenant = self.create_tenant("CONTRACT", "合同系统")
-        person = self.organization_service.create_person(
-            PersonCreateRequest(name="张三", email="ZHANGSAN@EXAMPLE.COM"),
-            self.db,
-        )
-
-        finance_member = self.organization_service.create_member(
-            finance_tenant.id,
-            TenantMemberCreateRequest(
-                person_id=person.id,
-                employee_no="F001",
-                external_user_id="platform-user-001",
-            ),
-            self.db,
-        )
-        contract_member = self.organization_service.create_member(
-            contract_tenant.id,
-            TenantMemberCreateRequest(
-                person_id=person.id,
-                employee_no="C001",
-                external_user_id="platform-user-001",
-            ),
-            self.db,
-        )
-
-        resolved_member = self.organization_service.resolve_member_by_external_user_id(
-            finance_tenant.id,
-            "platform-user-001",
-            self.db,
-        )
-        self.assertEqual(resolved_member.id, finance_member.id)
-        self.assertNotEqual(finance_member.id, contract_member.id)
-        self.assertEqual(resolved_member.person_name, "张三")
-        self.assertEqual(person.email, "zhangsan@example.com")
-
-    def test_member_cannot_bind_department_from_another_tenant(self) -> None:
-        """租户成员不能绑定另一个租户的部门。"""
-
-        finance_tenant = self.create_tenant("FINANCE", "财务系统")
-        contract_tenant = self.create_tenant("CONTRACT", "合同系统")
-        contract_department = self.organization_service.create_department(
-            contract_tenant.id,
-            DepartmentCreateRequest(code="LEGAL", name="法务部"),
-            self.db,
-        )
-        person = self.organization_service.create_person(
+        visible_person = self.organization_service.create_person(
             PersonCreateRequest(name="李四"),
             self.db,
         )
-
-        with self.assertRaises(OrganizationNotFoundError):
-            self.organization_service.create_member(
-                finance_tenant.id,
-                TenantMemberCreateRequest(
-                    person_id=person.id,
-                    department_id=contract_department.id,
-                ),
-                self.db,
-            )
-
-    def test_person_cannot_join_same_tenant_twice(self) -> None:
-        """同一人员在同一租户中只能存在一个成员关系。"""
-
-        tenant = self.create_tenant("FINANCE", "财务系统")
-        person = self.organization_service.create_person(
+        hidden_person = self.organization_service.create_person(
             PersonCreateRequest(name="王五"),
             self.db,
         )
-        request = TenantMemberCreateRequest(person_id=person.id)
-        self.organization_service.create_member(tenant.id, request, self.db)
+        scope = create_resource_scope(RESOURCE_PERSON, tenant.id)
+        scope.bind(
+            visible_person.id,
+            self.db,
+            attributes={"external_user_id": "platform-user-001"},
+        )
+        self.db.commit()
 
-        with self.assertRaises(OrganizationConflictError):
-            self.organization_service.create_member(tenant.id, request, self.db)
+        persons = self.organization_service.list_persons(self.db, scope=scope)
+        self.assertEqual([item.id for item in persons], [visible_person.id])
+        scope.require_access(visible_person.id, self.db)
+        with self.assertRaises(TenantResourceAccessError):
+            scope.require_access(hidden_person.id, self.db)
+
+    def test_department_membership_is_independent_from_tenant(self) -> None:
+        """人员部门关系可以在不创建租户的情况下正常使用。"""
+
+        person = self.organization_service.create_person(
+            PersonCreateRequest(name="赵六"),
+            self.db,
+        )
+        department = self.organization_service.create_department(
+            DepartmentCreateRequest(code="LEGAL", name="法务部"),
+            self.db,
+        )
+
+        response = self.organization_service.add_department_member(
+            department.id,
+            person.id,
+            self.db,
+        )
+        self.assertEqual(response.person_name, "赵六")
+        self.assertEqual(response.department_name, "法务部")
+
+    def test_fastapi_scope_dependency_switches_with_tenancy_setting(self) -> None:
+        """统一依赖在租户模式校验 API Key，在全局模式不要求 API Key。"""
+
+        tenant = self.tenant_service.create_tenant(
+            TenantCreateRequest(
+                code="PAYMENT",
+                name="付款系统",
+                callback_base_url="https://payment.example.com/approval",
+            ),
+            self.db,
+        )
+        api_key = self.tenant_service.create_api_key(
+            tenant_id=tenant.id,
+            name="测试 Key",
+            expires_at=None,
+            db=self.db,
+        )
+        dependency = build_resource_scope_dependency(RESOURCE_PERSON)
+
+        tenant_scope = dependency(x_api_key=api_key.api_key, db=self.db)
+        self.assertIsInstance(tenant_scope, TenantResourceScope)
+        self.assertEqual(tenant_scope.tenant_id, tenant.id)
+
+        # 关闭租户能力后，同一个依赖直接返回全局作用域且不读取 API Key。
+        os.environ["TENANCY_ENABLED"] = "false"
+        global_scope = dependency(x_api_key=None, db=self.db)
+        self.assertIsInstance(global_scope, GlobalResourceScope)
 
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -5,6 +5,8 @@ from uuid import UUID
 from sqlmodel import Session, select
 
 from app.server.tenant.src.models.tenant_model import (
+    DepartmentBinding,
+    PersonBinding,
     Tenant,
     TenantApiKey,
     TenantCallbackCredential,
@@ -87,5 +89,57 @@ class TenantRepository:
             select(TenantCallbackCredential)
             .where(TenantCallbackCredential.tenant_id == tenant_id)
             .order_by(TenantCallbackCredential.created_at.desc())
+        )
+        return list(db.exec(statement).all())
+
+    def get_person_binding(
+        self,
+        tenant_id: UUID,
+        person_id: UUID,
+        db: Session,
+    ) -> PersonBinding | None:
+        """查询租户与人员的绑定。"""
+
+        statement = select(PersonBinding).where(
+            PersonBinding.tenant_id == tenant_id,
+            PersonBinding.person_id == person_id,
+        )
+        return db.exec(statement).first()
+
+    def list_person_bindings(self, tenant_id: UUID, db: Session) -> list[PersonBinding]:
+        """查询租户的全部人员绑定。"""
+
+        statement = (
+            select(PersonBinding)
+            .where(PersonBinding.tenant_id == tenant_id)
+            .order_by(PersonBinding.created_at.desc())
+        )
+        return list(db.exec(statement).all())
+
+    def get_department_binding(
+        self,
+        tenant_id: UUID,
+        department_id: UUID,
+        db: Session,
+    ) -> DepartmentBinding | None:
+        """查询租户与部门的绑定。"""
+
+        statement = select(DepartmentBinding).where(
+            DepartmentBinding.tenant_id == tenant_id,
+            DepartmentBinding.department_id == department_id,
+        )
+        return db.exec(statement).first()
+
+    def list_department_bindings(
+        self,
+        tenant_id: UUID,
+        db: Session,
+    ) -> list[DepartmentBinding]:
+        """查询租户的全部部门绑定。"""
+
+        statement = (
+            select(DepartmentBinding)
+            .where(DepartmentBinding.tenant_id == tenant_id)
+            .order_by(DepartmentBinding.created_at.desc())
         )
         return list(db.exec(statement).all())

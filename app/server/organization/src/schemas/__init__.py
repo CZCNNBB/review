@@ -1,15 +1,19 @@
 """人员与组织请求响应模型导出。"""
 
 from app.server.organization.src.schemas.organization_schema import (
+    DepartmentBindingRequest,
+    DepartmentBindingResponse,
     DepartmentCreateRequest,
+    DepartmentMemberCreateRequest,
+    DepartmentMemberResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    PersonBindingRequest,
+    PersonBindingResponse,
+    PersonBindingUpdateRequest,
     PersonCreateRequest,
     PersonResponse,
     PersonUpdateRequest,
-    TenantMemberCreateRequest,
-    TenantMemberResponse,
-    TenantMemberUpdateRequest,
 )
 
 __all__ = [
@@ -19,8 +23,12 @@ __all__ = [
     "DepartmentCreateRequest",
     "DepartmentUpdateRequest",
     "DepartmentResponse",
-    "TenantMemberCreateRequest",
-    "TenantMemberUpdateRequest",
-    "TenantMemberResponse",
+    "DepartmentMemberCreateRequest",
+    "DepartmentMemberResponse",
+    "PersonBindingRequest",
+    "PersonBindingUpdateRequest",
+    "PersonBindingResponse",
+    "DepartmentBindingRequest",
+    "DepartmentBindingResponse",
 ]
 

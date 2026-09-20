@@ -13,6 +13,8 @@ INITIALIZATION_SQL_PATH = Path(__file__).resolve().parents[3] / "data" / "init.s
 # 初始化完成后检查关键表，避免 SQL 执行成功但遗漏某个模块结构。
 EXPECTED_SCHEMA_TABLES = {
     "tenant": {
+        "department_binding",
+        "person_binding",
         "tenant",
         "tenant_api_key",
         "tenant_callback_credential",
@@ -20,7 +22,7 @@ EXPECTED_SCHEMA_TABLES = {
     "organization": {
         "person",
         "department",
-        "tenant_member",
+        "department_member",
     },
 }
 

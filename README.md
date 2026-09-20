@@ -2,13 +2,15 @@
 
 这是审批中心使用的 FastAPI 后端脚手架。当前采用“微服务预备架构”：所有服务先放在一个 FastAPI 项目中运行，但每个服务模块都拥有独立的 `api` 接口层和 `src` 业务逻辑层，后续可以按需拆成真正的独立微服务。
 
-数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema。
+数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema，人员与组织服务使用 `organization` Schema。
 
 ## 设计文档
 
 - `docs/审批中心整体设计.md`：系统边界、模块划分、核心链路和实施顺序。
 - `docs/租户模块设计.md`：已经完成的租户模块设计。
-- `docs/人员与组织模块设计.md`：下一阶段人员、租户成员和部门设计。
+- `docs/人员与组织模块设计.md`：人员、部门及已经落地的租户解耦设计。
+- `docs/审批流模块设计.md`：流程图、节点、条件、租户绑定和审批人配置设计。
+- `docs/租户作用域设计.md`：可选租户模式、TenantScope 和分表资源绑定设计。
 
 ## 项目结构
 
@@ -21,8 +23,9 @@ backend/
     common/                       # 跨服务公共能力
       config/                     # 全局配置
       db/                         # 数据库连接
-      schemas/                    # 通用响应、公共模型
-      utils/                      # 公共工具函数
+      schemas/                    # 通用响应模型
+      scope/                      # 与租户实现无关的资源作用域接口
+      security/                   # 通用管理认证依赖
 
     server/                       # 后端服务模块集合
       tenant/
@@ -32,7 +35,12 @@ backend/
           schemas/                # 请求响应模型
           repository/             # 数据访问层
           service/                # 租户与凭据业务逻辑
+          scope/                  # 租户资源过滤、校验与绑定实现
           utils/                  # API Key 生成和回调凭据加密工具
+
+      organization/
+        api/                      # 人员、部门和租户绑定管理接口
+        src/                      # 独立的人员与组织业务逻辑
 ```
 
 ## 分层约定
@@ -89,6 +97,7 @@ POSTGRES_PASSWORD=你的数据库密码
 POSTGRES_DATABASE=approval_center
 FASTAPI_HOST=127.0.0.1
 FASTAPI_PORT=8090
+TENANCY_ENABLED=true
 ```
 
 租户管理接口使用临时管理密钥，后续接入项目平台管理员身份后替换：
@@ -119,7 +128,7 @@ APPROVAL_CREDENTIAL_MASTER_KEY=生成的Fernet密钥
 python -B -m app.common.db.init_db
 ```
 
-该命令会先执行 `CREATE SCHEMA IF NOT EXISTS tenant`，然后在其中创建租户模块数据表。它适用于开发期首次初始化；正式环境结构变更应切换到数据库迁移工具。
+该命令会创建 `tenant`、`organization` Schema 及当前模块需要的数据表，并在执行后检查关键表是否完整。它适用于开发期首次初始化；正式环境结构变更应切换到数据库迁移工具。
 
 ## 当前接口
 
@@ -140,22 +149,25 @@ POST /api/admin/persons
 GET  /api/admin/persons
 GET  /api/admin/persons/{person_id}
 PATCH /api/admin/persons/{person_id}
-POST /api/admin/tenants/{tenant_id}/departments
+POST /api/admin/departments
+GET  /api/admin/departments
+GET  /api/admin/departments/{department_id}
+PATCH /api/admin/departments/{department_id}
+POST /api/admin/departments/{department_id}/members
+GET  /api/admin/departments/{department_id}/members
+POST /api/admin/departments/{department_id}/members/{person_id}/disable
+POST /api/admin/tenants/{tenant_id}/persons/bind
+GET  /api/admin/tenants/{tenant_id}/persons
+PATCH /api/admin/tenants/{tenant_id}/persons/{person_id}/binding
+POST /api/admin/tenants/{tenant_id}/departments/bind
 GET  /api/admin/tenants/{tenant_id}/departments
-PATCH /api/admin/tenants/{tenant_id}/departments/{department_id}
-POST /api/admin/tenants/{tenant_id}/members
-GET  /api/admin/tenants/{tenant_id}/members
-GET  /api/admin/tenants/{tenant_id}/members/resolve
-GET  /api/admin/tenants/{tenant_id}/members/{member_id}
-PATCH /api/admin/tenants/{tenant_id}/members/{member_id}
 ```
 
-`/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。
+`/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
 
 ## 后续模块规划
 
 ```text
-server/person     审批人员与租户成员
 server/process    审批流配置
 server/approval   审批实例、任务与操作记录
 server/callback   业务动作回调与执行记录

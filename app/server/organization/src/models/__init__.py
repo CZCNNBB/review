@@ -2,9 +2,8 @@
 
 from app.server.organization.src.models.organization_model import (
     Department,
+    DepartmentMember,
     Person,
-    TenantMember,
 )
 
-__all__ = ["Person", "Department", "TenantMember"]
-
+__all__ = ["Person", "Department", "DepartmentMember"]

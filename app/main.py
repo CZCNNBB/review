@@ -28,6 +28,8 @@ def create_app() -> FastAPI:
     
     @app.get("/")
     def root_endpoint():
+        """返回审批中心后端的基础可用状态。"""
+
         return {"message": "统一入口"}
     
     return app

@@ -1,22 +1,29 @@
-"""人员、部门和租户成员管理接口。"""
+"""全局人员、部门及其租户绑定管理接口。"""
 
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
 from app.common.schemas.result import Result
+from app.common.scope import GlobalResourceScope
+from app.common.security import verify_admin_key
 from app.server.organization.src.schemas.organization_schema import (
+    DepartmentBindingRequest,
+    DepartmentBindingResponse,
     DepartmentCreateRequest,
+    DepartmentMemberCreateRequest,
+    DepartmentMemberResponse,
     DepartmentResponse,
     DepartmentUpdateRequest,
+    PersonBindingRequest,
+    PersonBindingResponse,
+    PersonBindingUpdateRequest,
     PersonCreateRequest,
     PersonResponse,
     PersonUpdateRequest,
-    TenantMemberCreateRequest,
-    TenantMemberResponse,
-    TenantMemberUpdateRequest,
 )
 from app.server.organization.src.service.exceptions import (
     OrganizationConflictError,
@@ -24,23 +31,125 @@ from app.server.organization.src.service.exceptions import (
     OrganizationValidationError,
 )
 from app.server.organization.src.service.organization_service import OrganizationService
-from app.server.tenant.api.dependencies import verify_admin_key
+from app.server.tenant.src.scope.tenant_scope import (
+    RESOURCE_DEPARTMENT,
+    RESOURCE_PERSON,
+    TenantResourceAccessError,
+    TenantResourceScope,
+    create_resource_scope,
+    is_tenancy_enabled,
+)
+from app.server.tenant.src.service.exceptions import TenantNotFoundError
+from app.server.tenant.src.service.tenant_service import TenantService
 
 
 router = APIRouter()
 organization_service = OrganizationService()
+tenant_service = TenantService()
+global_scope = GlobalResourceScope()
 
 
 def raise_organization_http_error(exc: Exception) -> None:
-    """将人员组织领域异常转换为明确的 HTTP 异常。"""
+    """将人员组织及租户作用域异常转换为 HTTP 异常。"""
 
-    if isinstance(exc, OrganizationNotFoundError):
+    if isinstance(exc, (OrganizationNotFoundError, TenantNotFoundError)):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if isinstance(exc, OrganizationConflictError):
+    if isinstance(exc, (OrganizationConflictError, IntegrityError)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
-    if isinstance(exc, OrganizationValidationError):
+    if isinstance(exc, (OrganizationValidationError, TenantResourceAccessError)):
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     raise exc
+
+
+def get_tenant_scope(
+    tenant_id: UUID,
+    resource_type: str,
+    db: Session,
+) -> TenantResourceScope:
+    """校验租户并创建显式租户管理接口使用的资源作用域。"""
+
+    if not is_tenancy_enabled():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="当前未启用租户能力，请使用全局管理接口",
+        )
+
+    tenant_service.get_tenant(tenant_id, db)
+    scope = create_resource_scope(resource_type, tenant_id)
+    if not isinstance(scope, TenantResourceScope):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="租户作用域初始化失败",
+        )
+    return scope
+
+
+def commit_binding(db: Session, message: str) -> None:
+    """提交租户绑定事务，并转换唯一约束冲突。"""
+
+    try:
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+        raise OrganizationConflictError(message) from exc
+
+
+def build_person_binding_response(
+    scope: TenantResourceScope,
+    person_id: UUID,
+    db: Session,
+) -> PersonBindingResponse:
+    """构造租户人员绑定及关联展示信息。"""
+
+    binding = scope.get_binding(person_id, db)
+    if not binding:
+        raise OrganizationNotFoundError("租户人员绑定不存在")
+
+    person = organization_service.get_person(person_id, db)
+    department_name: str | None = None
+    if binding.department_id:
+        department = organization_service.get_department(binding.department_id, db)
+        department_name = department.name
+
+    return PersonBindingResponse(
+        binding_id=binding.id,
+        tenant_id=binding.tenant_id,
+        person_id=person.id,
+        person_name=person.name,
+        department_id=binding.department_id,
+        department_name=department_name,
+        employee_no=binding.employee_no,
+        external_user_id=binding.external_user_id,
+        display_name=binding.display_name,
+        status=binding.status,
+        created_at=binding.created_at,
+        updated_at=binding.updated_at,
+    )
+
+
+def build_department_binding_response(
+    scope: TenantResourceScope,
+    department_id: UUID,
+    db: Session,
+) -> DepartmentBindingResponse:
+    """构造租户部门绑定及关联展示信息。"""
+
+    binding = scope.get_binding(department_id, db)
+    if not binding:
+        raise OrganizationNotFoundError("租户部门绑定不存在")
+
+    department = organization_service.get_department(department_id, db)
+    return DepartmentBindingResponse(
+        binding_id=binding.id,
+        tenant_id=binding.tenant_id,
+        department_id=department.id,
+        department_code=department.code,
+        department_name=department.name,
+        local_code=binding.local_code,
+        status=binding.status,
+        created_at=binding.created_at,
+        updated_at=binding.updated_at,
+    )
 
 
 @router.post(
@@ -48,13 +157,13 @@ def raise_organization_http_error(exc: Exception) -> None:
     response_model=Result[PersonResponse],
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(verify_admin_key)],
-    summary="创建人员",
+    summary="创建全局人员",
 )
 def create_person(
     request: PersonCreateRequest,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[PersonResponse]:
-    """创建审批中心全局人员。"""
+    """创建与租户无关的全局人员。"""
 
     try:
         person = organization_service.create_person(request, db)
@@ -67,16 +176,21 @@ def create_person(
     "/admin/persons",
     response_model=Result[list[PersonResponse]],
     dependencies=[Depends(verify_admin_key)],
-    summary="查询人员列表",
+    summary="查询全局人员",
 )
 def list_persons(
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_postgres_engine),
 ) -> Result[list[PersonResponse]]:
-    """分页查询审批中心全局人员。"""
+    """不经过租户过滤分页查询全部人员。"""
 
-    persons = organization_service.list_persons(db, offset=offset, limit=limit)
+    persons = organization_service.list_persons(
+        db,
+        scope=global_scope,
+        offset=offset,
+        limit=limit,
+    )
     return Result.success([PersonResponse.model_validate(person) for person in persons])
 
 
@@ -90,7 +204,7 @@ def get_person(
     person_id: UUID,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[PersonResponse]:
-    """查询指定全局人员。"""
+    """查询全局人员详情。"""
 
     try:
         person = organization_service.get_person(person_id, db)
@@ -110,7 +224,7 @@ def update_person(
     request: PersonUpdateRequest,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[PersonResponse]:
-    """更新人员资料或启停状态。"""
+    """更新全局人员资料或状态。"""
 
     try:
         person = organization_service.update_person(person_id, request, db)
@@ -120,91 +234,110 @@ def update_person(
 
 
 @router.post(
-    "/admin/tenants/{tenant_id}/departments",
+    "/admin/departments",
     response_model=Result[DepartmentResponse],
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(verify_admin_key)],
-    summary="创建租户部门",
+    summary="创建全局部门",
 )
 def create_department(
-    tenant_id: UUID,
     request: DepartmentCreateRequest,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[DepartmentResponse]:
-    """为租户创建平铺部门。"""
+    """创建与租户无关的全局部门。"""
 
     try:
-        department = organization_service.create_department(tenant_id, request, db)
+        department = organization_service.create_department(request, db)
         return Result.success(DepartmentResponse.model_validate(department))
-    except (OrganizationNotFoundError, OrganizationConflictError) as exc:
+    except OrganizationConflictError as exc:
         raise_organization_http_error(exc)
 
 
 @router.get(
-    "/admin/tenants/{tenant_id}/departments",
+    "/admin/departments",
     response_model=Result[list[DepartmentResponse]],
     dependencies=[Depends(verify_admin_key)],
-    summary="查询租户部门",
+    summary="查询全局部门",
 )
 def list_departments(
-    tenant_id: UUID,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
     db: Session = Depends(get_postgres_engine),
 ) -> Result[list[DepartmentResponse]]:
-    """查询租户下的全部平铺部门。"""
+    """不经过租户过滤分页查询全部部门。"""
+
+    departments = organization_service.list_departments(
+        db,
+        scope=global_scope,
+        offset=offset,
+        limit=limit,
+    )
+    return Result.success(
+        [DepartmentResponse.model_validate(department) for department in departments]
+    )
+
+
+@router.get(
+    "/admin/departments/{department_id}",
+    response_model=Result[DepartmentResponse],
+    dependencies=[Depends(verify_admin_key)],
+    summary="查询部门详情",
+)
+def get_department(
+    department_id: UUID,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[DepartmentResponse]:
+    """查询全局部门详情。"""
 
     try:
-        departments = organization_service.list_departments(tenant_id, db)
-        return Result.success(
-            [DepartmentResponse.model_validate(department) for department in departments]
-        )
+        department = organization_service.get_department(department_id, db)
+        return Result.success(DepartmentResponse.model_validate(department))
     except OrganizationNotFoundError as exc:
         raise_organization_http_error(exc)
 
 
 @router.patch(
-    "/admin/tenants/{tenant_id}/departments/{department_id}",
+    "/admin/departments/{department_id}",
     response_model=Result[DepartmentResponse],
     dependencies=[Depends(verify_admin_key)],
-    summary="更新租户部门",
+    summary="更新部门",
 )
 def update_department(
-    tenant_id: UUID,
     department_id: UUID,
     request: DepartmentUpdateRequest,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[DepartmentResponse]:
-    """更新租户部门名称或启停状态。"""
+    """更新全局部门名称或状态。"""
 
     try:
-        department = organization_service.update_department(
-            tenant_id,
-            department_id,
-            request,
-            db,
-        )
+        department = organization_service.update_department(department_id, request, db)
         return Result.success(DepartmentResponse.model_validate(department))
     except (OrganizationNotFoundError, OrganizationConflictError) as exc:
         raise_organization_http_error(exc)
 
 
 @router.post(
-    "/admin/tenants/{tenant_id}/members",
-    response_model=Result[TenantMemberResponse],
+    "/admin/departments/{department_id}/members",
+    response_model=Result[DepartmentMemberResponse],
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(verify_admin_key)],
-    summary="创建租户成员",
+    summary="添加部门人员",
 )
-def create_member(
-    tenant_id: UUID,
-    request: TenantMemberCreateRequest,
+def add_department_member(
+    department_id: UUID,
+    request: DepartmentMemberCreateRequest,
     db: Session = Depends(get_postgres_engine),
-) -> Result[TenantMemberResponse]:
-    """将全局人员添加为租户成员。"""
+) -> Result[DepartmentMemberResponse]:
+    """把全局人员加入全局部门。"""
 
     try:
-        member = organization_service.create_member(tenant_id, request, db)
-        response = organization_service.get_member_response(tenant_id, member.id, db)
-        return Result.success(response)
+        return Result.success(
+            organization_service.add_department_member(
+                department_id,
+                request.person_id,
+                db,
+            )
+        )
     except (
         OrganizationNotFoundError,
         OrganizationConflictError,
@@ -214,94 +347,248 @@ def create_member(
 
 
 @router.get(
-    "/admin/tenants/{tenant_id}/members",
-    response_model=Result[list[TenantMemberResponse]],
+    "/admin/departments/{department_id}/members",
+    response_model=Result[list[DepartmentMemberResponse]],
     dependencies=[Depends(verify_admin_key)],
-    summary="查询租户成员",
+    summary="查询部门人员",
 )
-def list_members(
-    tenant_id: UUID,
+def list_department_members(
+    department_id: UUID,
     db: Session = Depends(get_postgres_engine),
-) -> Result[list[TenantMemberResponse]]:
-    """查询租户成员及人员、部门展示信息。"""
-
-    try:
-        return Result.success(organization_service.list_members(tenant_id, db))
-    except OrganizationNotFoundError as exc:
-        raise_organization_http_error(exc)
-
-
-@router.get(
-    "/admin/tenants/{tenant_id}/members/resolve",
-    response_model=Result[TenantMemberResponse],
-    dependencies=[Depends(verify_admin_key)],
-    summary="按外部用户标识解析租户成员",
-)
-def resolve_member(
-    tenant_id: UUID,
-    external_user_id: str = Query(min_length=1, max_length=128),
-    db: Session = Depends(get_postgres_engine),
-) -> Result[TenantMemberResponse]:
-    """通过项目平台用户标识解析当前租户成员。"""
-
-    try:
-        response = organization_service.resolve_member_by_external_user_id(
-            tenant_id,
-            external_user_id,
-            db,
-        )
-        return Result.success(response)
-    except (OrganizationNotFoundError, OrganizationValidationError) as exc:
-        raise_organization_http_error(exc)
-
-
-@router.get(
-    "/admin/tenants/{tenant_id}/members/{member_id}",
-    response_model=Result[TenantMemberResponse],
-    dependencies=[Depends(verify_admin_key)],
-    summary="查询租户成员详情",
-)
-def get_member(
-    tenant_id: UUID,
-    member_id: UUID,
-    db: Session = Depends(get_postgres_engine),
-) -> Result[TenantMemberResponse]:
-    """查询指定租户成员详情。"""
+) -> Result[list[DepartmentMemberResponse]]:
+    """查询全局部门下的人员。"""
 
     try:
         return Result.success(
-            organization_service.get_member_response(tenant_id, member_id, db)
+            organization_service.list_department_members(department_id, db)
         )
     except OrganizationNotFoundError as exc:
+        raise_organization_http_error(exc)
+
+
+@router.post(
+    "/admin/departments/{department_id}/members/{person_id}/disable",
+    response_model=Result[DepartmentMemberResponse],
+    dependencies=[Depends(verify_admin_key)],
+    summary="停用部门人员关系",
+)
+def disable_department_member(
+    department_id: UUID,
+    person_id: UUID,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[DepartmentMemberResponse]:
+    """停用指定人员部门关系。"""
+
+    try:
+        return Result.success(
+            organization_service.disable_department_member(
+                department_id,
+                person_id,
+                db,
+            )
+        )
+    except OrganizationNotFoundError as exc:
+        raise_organization_http_error(exc)
+
+
+@router.post(
+    "/admin/tenants/{tenant_id}/persons/bind",
+    response_model=Result[PersonBindingResponse],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_admin_key)],
+    summary="绑定租户人员",
+)
+def bind_person(
+    tenant_id: UUID,
+    request: PersonBindingRequest,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[PersonBindingResponse]:
+    """在人员模块 API 中建立租户人员绑定。"""
+
+    try:
+        organization_service.get_person(request.person_id, db)
+        person_scope = get_tenant_scope(tenant_id, RESOURCE_PERSON, db)
+
+        if request.department_id:
+            organization_service.get_department(request.department_id, db)
+            department_scope = get_tenant_scope(
+                tenant_id,
+                RESOURCE_DEPARTMENT,
+                db,
+            )
+            department_scope.require_access(request.department_id, db)
+
+        person_scope.bind(
+            request.person_id,
+            db,
+            attributes=request.model_dump(exclude={"person_id"}),
+        )
+        commit_binding(db, "租户人员工号或外部用户标识已存在")
+        return Result.success(
+            build_person_binding_response(person_scope, request.person_id, db)
+        )
+    except (
+        OrganizationNotFoundError,
+        OrganizationConflictError,
+        TenantNotFoundError,
+        TenantResourceAccessError,
+    ) as exc:
+        raise_organization_http_error(exc)
+
+
+@router.get(
+    "/admin/tenants/{tenant_id}/persons",
+    response_model=Result[list[PersonBindingResponse]],
+    dependencies=[Depends(verify_admin_key)],
+    summary="查询租户人员",
+)
+def list_tenant_persons(
+    tenant_id: UUID,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[list[PersonBindingResponse]]:
+    """通过 TenantScope 查询当前租户可见的人员。"""
+
+    try:
+        person_scope = get_tenant_scope(tenant_id, RESOURCE_PERSON, db)
+        persons = organization_service.list_persons(
+            db,
+            scope=person_scope,
+            offset=0,
+            limit=500,
+        )
+        return Result.success(
+            [
+                build_person_binding_response(person_scope, person.id, db)
+                for person in persons
+            ]
+        )
+    except (OrganizationNotFoundError, TenantNotFoundError) as exc:
         raise_organization_http_error(exc)
 
 
 @router.patch(
-    "/admin/tenants/{tenant_id}/members/{member_id}",
-    response_model=Result[TenantMemberResponse],
+    "/admin/tenants/{tenant_id}/persons/{person_id}/binding",
+    response_model=Result[PersonBindingResponse],
     dependencies=[Depends(verify_admin_key)],
-    summary="更新租户成员",
+    summary="更新租户人员绑定",
 )
-def update_member(
+def update_person_binding(
     tenant_id: UUID,
-    member_id: UUID,
-    request: TenantMemberUpdateRequest,
+    person_id: UUID,
+    request: PersonBindingUpdateRequest,
     db: Session = Depends(get_postgres_engine),
-) -> Result[TenantMemberResponse]:
-    """更新成员部门、业务标识、展示名称或启停状态。"""
+) -> Result[PersonBindingResponse]:
+    """更新租户人员的租户内资料和状态。"""
 
     try:
-        response = organization_service.update_member(
-            tenant_id,
-            member_id,
-            request,
-            db,
+        person_scope = get_tenant_scope(tenant_id, RESOURCE_PERSON, db)
+        binding = person_scope.get_binding(person_id, db)
+        if not binding:
+            raise OrganizationNotFoundError("租户人员绑定不存在")
+
+        update_data = request.model_dump(exclude_unset=True)
+        department_id = update_data.get("department_id")
+        if department_id:
+            organization_service.get_department(department_id, db)
+            department_scope = get_tenant_scope(
+                tenant_id,
+                RESOURCE_DEPARTMENT,
+                db,
+            )
+            department_scope.require_access(department_id, db)
+
+        for field_name, field_value in update_data.items():
+            setattr(binding, field_name, field_value)
+        db.add(binding)
+        commit_binding(db, "租户人员工号或外部用户标识已存在")
+        return Result.success(
+            build_person_binding_response(person_scope, person_id, db)
         )
-        return Result.success(response)
     except (
         OrganizationNotFoundError,
         OrganizationConflictError,
-        OrganizationValidationError,
+        TenantNotFoundError,
+        TenantResourceAccessError,
     ) as exc:
+        raise_organization_http_error(exc)
+
+
+@router.post(
+    "/admin/tenants/{tenant_id}/departments/bind",
+    response_model=Result[DepartmentBindingResponse],
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(verify_admin_key)],
+    summary="绑定租户部门",
+)
+def bind_department(
+    tenant_id: UUID,
+    request: DepartmentBindingRequest,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[DepartmentBindingResponse]:
+    """在部门模块 API 中建立租户部门绑定。"""
+
+    try:
+        organization_service.get_department(request.department_id, db)
+        department_scope = get_tenant_scope(
+            tenant_id,
+            RESOURCE_DEPARTMENT,
+            db,
+        )
+        department_scope.bind(
+            request.department_id,
+            db,
+            attributes={"local_code": request.local_code},
+        )
+        commit_binding(db, "租户内部门编码已存在")
+        return Result.success(
+            build_department_binding_response(
+                department_scope,
+                request.department_id,
+                db,
+            )
+        )
+    except (
+        OrganizationNotFoundError,
+        OrganizationConflictError,
+        TenantNotFoundError,
+    ) as exc:
+        raise_organization_http_error(exc)
+
+
+@router.get(
+    "/admin/tenants/{tenant_id}/departments",
+    response_model=Result[list[DepartmentBindingResponse]],
+    dependencies=[Depends(verify_admin_key)],
+    summary="查询租户部门",
+)
+def list_tenant_departments(
+    tenant_id: UUID,
+    db: Session = Depends(get_postgres_engine),
+) -> Result[list[DepartmentBindingResponse]]:
+    """通过 TenantScope 查询当前租户可见的部门。"""
+
+    try:
+        department_scope = get_tenant_scope(
+            tenant_id,
+            RESOURCE_DEPARTMENT,
+            db,
+        )
+        departments = organization_service.list_departments(
+            db,
+            scope=department_scope,
+            offset=0,
+            limit=500,
+        )
+        return Result.success(
+            [
+                build_department_binding_response(
+                    department_scope,
+                    department.id,
+                    db,
+                )
+                for department in departments
+            ]
+        )
+    except (OrganizationNotFoundError, TenantNotFoundError) as exc:
         raise_organization_http_error(exc)
 
