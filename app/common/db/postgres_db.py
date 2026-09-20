@@ -1,7 +1,7 @@
 """PostgreSQL 数据库引擎与会话工厂。"""
 
 from sqlmodel import Session, create_engine
-from app.common.config.datebase_config import postgres_connection_string
+from app.common.config.database_config import postgres_connection_string
 
 
 # 创建全局唯一的数据库引擎
