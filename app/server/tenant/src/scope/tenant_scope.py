@@ -9,11 +9,10 @@ from sqlalchemy import exists
 from sqlmodel import Session, select
 
 from app.common.scope import GlobalResourceScope, ResourceScope
-from app.server.tenant.src.models.tenant_model import DepartmentBinding, PersonBinding
+from app.server.tenant.src.models.tenant_model import PersonBinding
 
 
 RESOURCE_PERSON = "organization.person"
-RESOURCE_DEPARTMENT = "organization.department"
 
 
 class TenantResourceAccessError(Exception):
@@ -32,10 +31,6 @@ BINDING_DEFINITIONS: dict[str, BindingDefinition] = {
     RESOURCE_PERSON: BindingDefinition(
         model=PersonBinding,
         resource_id_field="person_id",
-    ),
-    RESOURCE_DEPARTMENT: BindingDefinition(
-        model=DepartmentBinding,
-        resource_id_field="department_id",
     ),
 }
 
@@ -174,4 +169,3 @@ def create_resource_scope(
     if tenant_id is None:
         raise ValueError("启用租户能力时必须提供 tenant_id")
     return TenantResourceScope(tenant_id=tenant_id, resource_type=resource_type)
-

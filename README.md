@@ -159,8 +159,6 @@ POST /api/admin/departments/{department_id}/members/{person_id}/disable
 POST /api/admin/tenants/{tenant_id}/persons/bind
 GET  /api/admin/tenants/{tenant_id}/persons
 PATCH /api/admin/tenants/{tenant_id}/persons/{person_id}/binding
-POST /api/admin/tenants/{tenant_id}/departments/bind
-GET  /api/admin/tenants/{tenant_id}/departments
 ```
 
 `/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。

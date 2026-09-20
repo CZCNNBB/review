@@ -1,4 +1,4 @@
-"""租户、API Key、回调凭据与资源绑定数据库模型。"""
+"""租户、API Key、回调凭据与人员绑定数据库模型。"""
 
 from datetime import datetime, timezone
 from typing import Optional
@@ -32,6 +32,7 @@ class Tenant(SQLModel, table=True):
     status: str = Field(default="ENABLED", max_length=20, index=True)
     created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+
 
 class TenantApiKey(SQLModel, table=True):
     """业务系统调用审批 API 使用的 API Key。"""
@@ -90,30 +91,9 @@ class PersonBinding(SQLModel, table=True):
     tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
     # 业务资源 ID 不建立跨 Schema 外键，保证 tenant Schema 可以独立移除。
     person_id: UUID = Field(index=True)
-    department_id: Optional[UUID] = Field(default=None, index=True)
     employee_no: Optional[str] = Field(default=None, max_length=64)
     external_user_id: Optional[str] = Field(default=None, max_length=128)
     display_name: Optional[str] = Field(default=None, max_length=100)
-    status: str = Field(default="ENABLED", max_length=20, index=True)
-    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
-    updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
-
-
-class DepartmentBinding(SQLModel, table=True):
-    """租户与全局部门之间的绑定。"""
-
-    __tablename__ = "department_binding"
-    __table_args__ = (
-        UniqueConstraint("tenant_id", "department_id", name="uq_department_binding_resource"),
-        UniqueConstraint("tenant_id", "local_code", name="uq_department_binding_local_code"),
-        {"schema": TENANT_DB_SCHEMA},
-    )
-
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
-    # 业务资源 ID 不建立跨 Schema 外键。
-    department_id: UUID = Field(index=True)
-    local_code: Optional[str] = Field(default=None, max_length=64)
     status: str = Field(default="ENABLED", max_length=20, index=True)
     created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))

@@ -182,7 +182,6 @@ class PersonBindingRequest(BaseModel):
     """将人员绑定到租户时使用的租户内资料。"""
 
     person_id: UUID
-    department_id: UUID | None = None
     employee_no: str | None = Field(default=None, max_length=64)
     external_user_id: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=100)
@@ -198,7 +197,6 @@ class PersonBindingRequest(BaseModel):
 class PersonBindingUpdateRequest(BaseModel):
     """更新租户人员绑定请求。"""
 
-    department_id: UUID | None = None
     employee_no: str | None = Field(default=None, max_length=64)
     external_user_id: str | None = Field(default=None, max_length=128)
     display_name: str | None = Field(default=None, max_length=100)
@@ -227,40 +225,9 @@ class PersonBindingResponse(BaseModel):
     tenant_id: UUID
     person_id: UUID
     person_name: str
-    department_id: UUID | None
-    department_name: str | None
     employee_no: str | None
     external_user_id: str | None
     display_name: str | None
-    status: str
-    created_at: datetime
-    updated_at: datetime
-
-
-class DepartmentBindingRequest(BaseModel):
-    """将全局部门绑定到租户的请求。"""
-
-    department_id: UUID
-    local_code: str | None = Field(default=None, max_length=64)
-
-    @field_validator("local_code")
-    @classmethod
-    def normalize_local_code(cls, value: str | None) -> str | None:
-        """清理并统一租户内部门编码。"""
-
-        normalized_value = normalize_optional_text(value)
-        return normalized_value.upper() if normalized_value else None
-
-
-class DepartmentBindingResponse(BaseModel):
-    """租户部门绑定及全局部门展示信息。"""
-
-    binding_id: UUID
-    tenant_id: UUID
-    department_id: UUID
-    department_code: str
-    department_name: str
-    local_code: str | None
     status: str
     created_at: datetime
     updated_at: datetime

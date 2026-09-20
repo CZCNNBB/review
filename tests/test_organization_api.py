@@ -11,7 +11,6 @@ from app.common.db.postgres_db import get_postgres_engine
 from app.main import create_app
 from app.server.organization.src.models import Department, DepartmentMember, Person
 from app.server.tenant.src.models import (
-    DepartmentBinding,
     PersonBinding,
     Tenant,
     TenantApiKey,
@@ -100,30 +99,17 @@ class OrganizationApiTestCase(unittest.TestCase):
             json={"code": "finance_dept", "name": "财务部"},
         )
         self.assertEqual(department_response.status_code, 201)
-        department_id = department_response.json()["data"]["id"]
-
-        bind_department_response = self.client.post(
-            f"/api/admin/tenants/{tenant_id}/departments/bind",
-            headers=self.admin_headers,
-            json={"department_id": department_id, "local_code": "FIN"},
-        )
-        self.assertEqual(bind_department_response.status_code, 201)
-
         bind_person_response = self.client.post(
             f"/api/admin/tenants/{tenant_id}/persons/bind",
             headers=self.admin_headers,
             json={
                 "person_id": person_id,
-                "department_id": department_id,
                 "employee_no": "F001",
                 "external_user_id": "project-user-001",
             },
         )
         self.assertEqual(bind_person_response.status_code, 201)
-        self.assertEqual(
-            bind_person_response.json()["data"]["department_name"],
-            "财务部",
-        )
+        self.assertEqual(bind_person_response.json()["data"]["employee_no"], "F001")
 
         list_response = self.client.get(
             f"/api/admin/tenants/{tenant_id}/persons",
@@ -154,4 +140,3 @@ class OrganizationApiTestCase(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

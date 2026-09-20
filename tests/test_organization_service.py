@@ -15,7 +15,6 @@ from app.server.organization.src.schemas.organization_schema import (
 )
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.tenant.src.models import (
-    DepartmentBinding,
     PersonBinding,
     Tenant,
     TenantApiKey,
@@ -66,7 +65,7 @@ class OrganizationServiceTestCase(unittest.TestCase):
             os.environ["TENANCY_ENABLED"] = self.previous_tenancy_enabled
 
     def test_global_mode_lists_resources_without_tenant_tables(self) -> None:
-        """全局作用域不需要租户绑定即可查询人员和部门。"""
+        """全局作用域不需要人员租户绑定即可查询人员和部门。"""
 
         person = self.organization_service.create_person(
             PersonCreateRequest(name="张三"),

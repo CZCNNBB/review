@@ -11,8 +11,6 @@ from app.common.schemas.result import Result
 from app.common.scope import GlobalResourceScope
 from app.common.security import verify_admin_key
 from app.server.organization.src.schemas.organization_schema import (
-    DepartmentBindingRequest,
-    DepartmentBindingResponse,
     DepartmentCreateRequest,
     DepartmentMemberCreateRequest,
     DepartmentMemberResponse,
@@ -32,7 +30,6 @@ from app.server.organization.src.service.exceptions import (
 )
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.tenant.src.scope.tenant_scope import (
-    RESOURCE_DEPARTMENT,
     RESOURCE_PERSON,
     TenantResourceAccessError,
     TenantResourceScope,
@@ -106,46 +103,14 @@ def build_person_binding_response(
         raise OrganizationNotFoundError("租户人员绑定不存在")
 
     person = organization_service.get_person(person_id, db)
-    department_name: str | None = None
-    if binding.department_id:
-        department = organization_service.get_department(binding.department_id, db)
-        department_name = department.name
-
     return PersonBindingResponse(
         binding_id=binding.id,
         tenant_id=binding.tenant_id,
         person_id=person.id,
         person_name=person.name,
-        department_id=binding.department_id,
-        department_name=department_name,
         employee_no=binding.employee_no,
         external_user_id=binding.external_user_id,
         display_name=binding.display_name,
-        status=binding.status,
-        created_at=binding.created_at,
-        updated_at=binding.updated_at,
-    )
-
-
-def build_department_binding_response(
-    scope: TenantResourceScope,
-    department_id: UUID,
-    db: Session,
-) -> DepartmentBindingResponse:
-    """构造租户部门绑定及关联展示信息。"""
-
-    binding = scope.get_binding(department_id, db)
-    if not binding:
-        raise OrganizationNotFoundError("租户部门绑定不存在")
-
-    department = organization_service.get_department(department_id, db)
-    return DepartmentBindingResponse(
-        binding_id=binding.id,
-        tenant_id=binding.tenant_id,
-        department_id=department.id,
-        department_code=department.code,
-        department_name=department.name,
-        local_code=binding.local_code,
         status=binding.status,
         created_at=binding.created_at,
         updated_at=binding.updated_at,
@@ -409,15 +374,6 @@ def bind_person(
         organization_service.get_person(request.person_id, db)
         person_scope = get_tenant_scope(tenant_id, RESOURCE_PERSON, db)
 
-        if request.department_id:
-            organization_service.get_department(request.department_id, db)
-            department_scope = get_tenant_scope(
-                tenant_id,
-                RESOURCE_DEPARTMENT,
-                db,
-            )
-            department_scope.require_access(request.department_id, db)
-
         person_scope.bind(
             request.person_id,
             db,
@@ -487,16 +443,6 @@ def update_person_binding(
             raise OrganizationNotFoundError("租户人员绑定不存在")
 
         update_data = request.model_dump(exclude_unset=True)
-        department_id = update_data.get("department_id")
-        if department_id:
-            organization_service.get_department(department_id, db)
-            department_scope = get_tenant_scope(
-                tenant_id,
-                RESOURCE_DEPARTMENT,
-                db,
-            )
-            department_scope.require_access(department_id, db)
-
         for field_name, field_value in update_data.items():
             setattr(binding, field_name, field_value)
         db.add(binding)
@@ -511,84 +457,3 @@ def update_person_binding(
         TenantResourceAccessError,
     ) as exc:
         raise_organization_http_error(exc)
-
-
-@router.post(
-    "/admin/tenants/{tenant_id}/departments/bind",
-    response_model=Result[DepartmentBindingResponse],
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_admin_key)],
-    summary="绑定租户部门",
-)
-def bind_department(
-    tenant_id: UUID,
-    request: DepartmentBindingRequest,
-    db: Session = Depends(get_postgres_engine),
-) -> Result[DepartmentBindingResponse]:
-    """在部门模块 API 中建立租户部门绑定。"""
-
-    try:
-        organization_service.get_department(request.department_id, db)
-        department_scope = get_tenant_scope(
-            tenant_id,
-            RESOURCE_DEPARTMENT,
-            db,
-        )
-        department_scope.bind(
-            request.department_id,
-            db,
-            attributes={"local_code": request.local_code},
-        )
-        commit_binding(db, "租户内部门编码已存在")
-        return Result.success(
-            build_department_binding_response(
-                department_scope,
-                request.department_id,
-                db,
-            )
-        )
-    except (
-        OrganizationNotFoundError,
-        OrganizationConflictError,
-        TenantNotFoundError,
-    ) as exc:
-        raise_organization_http_error(exc)
-
-
-@router.get(
-    "/admin/tenants/{tenant_id}/departments",
-    response_model=Result[list[DepartmentBindingResponse]],
-    dependencies=[Depends(verify_admin_key)],
-    summary="查询租户部门",
-)
-def list_tenant_departments(
-    tenant_id: UUID,
-    db: Session = Depends(get_postgres_engine),
-) -> Result[list[DepartmentBindingResponse]]:
-    """通过 TenantScope 查询当前租户可见的部门。"""
-
-    try:
-        department_scope = get_tenant_scope(
-            tenant_id,
-            RESOURCE_DEPARTMENT,
-            db,
-        )
-        departments = organization_service.list_departments(
-            db,
-            scope=department_scope,
-            offset=0,
-            limit=500,
-        )
-        return Result.success(
-            [
-                build_department_binding_response(
-                    department_scope,
-                    department.id,
-                    db,
-                )
-                for department in departments
-            ]
-        )
-    except (OrganizationNotFoundError, TenantNotFoundError) as exc:
-        raise_organization_http_error(exc)
-
