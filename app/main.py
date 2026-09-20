@@ -1,5 +1,17 @@
-import app.bootstrap  # 初始化异步环境, 必须最先导入
 import os
+import sys
+from pathlib import Path
+
+# 支持在 backend/app 目录直接执行 `python main.py`。直接运行脚本时，Python
+# 默认只把 app 目录加入模块搜索路径，需要主动补充它的父目录 backend。
+if __package__ in {None, ""}:
+    backend_directory = Path(__file__).resolve().parent.parent
+    backend_directory_text = str(backend_directory)
+    if backend_directory_text not in sys.path:
+        sys.path.insert(0, backend_directory_text)
+
+import app.bootstrap  # 初始化异步环境，必须在其他项目模块之前导入
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.server.organization.api import router as organization_router

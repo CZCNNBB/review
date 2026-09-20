@@ -79,6 +79,13 @@ pip install -r requirements.txt
 python -m app.main
 ```
 
+也支持进入 `app` 目录后直接启动：
+
+```powershell
+cd app
+python main.py
+```
+
 也可以直接使用 uvicorn：
 
 ```powershell
