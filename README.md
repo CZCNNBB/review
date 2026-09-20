@@ -7,10 +7,12 @@
 ## 设计文档
 
 - `docs/审批中心整体设计.md`：系统边界、模块划分、核心链路和实施顺序。
-- `docs/租户模块设计.md`：已经完成的租户模块设计。
-- `docs/人员与组织模块设计.md`：人员、部门及已经落地的租户解耦设计。
-- `docs/审批流模块设计.md`：节点能力、包含审批人的完整流程编排、连线和租户使用权设计。
-- `docs/租户作用域设计.md`：可选租户模式、TenantScope 和分表资源绑定设计。
+- `docs/项目开发初步进度记录表.md`：各模块设计、开发状态、目标和推荐实施节奏。
+- `app/server/tenant/docs/租户模块设计.md`：已经完成的租户模块设计。
+- `app/server/tenant/docs/租户作用域设计.md`：可选租户模式、TenantScope 和分表资源绑定设计。
+- `app/server/organization/docs/人员与组织模块设计.md`：人员、部门及已经落地的租户解耦设计。
+- `app/server/process/docs/审批流模块设计.md`：节点能力、流程编排、审批人和租户使用权设计。
+- 其他模块的设计文档统一存放在各自 `app/server/<module>/docs/` 下。
 
 ## 项目结构
 
@@ -40,7 +42,28 @@ backend/
 
       organization/
         api/                      # 人员、部门和租户绑定管理接口
+        docs/                     # 人员与组织模块文档
         src/                      # 独立的人员与组织业务逻辑
+
+      process/                    # 审批流定义与流程编排
+        api/
+        docs/
+        src/
+
+      integration/                # 业务动作与接入配置
+        api/
+        docs/
+        src/
+
+      approval/                   # 审批实例、快照、任务和审批记录
+        api/
+        docs/
+        src/
+
+      callback/                   # 业务回调任务、执行记录和重试
+        api/
+        docs/
+        src/
 ```
 
 ## 分层约定
@@ -174,6 +197,7 @@ PATCH /api/admin/tenants/{tenant_id}/persons/{person_id}/binding
 
 ```text
 server/process    审批流配置
+server/integration 业务动作与接入配置
 server/approval   审批实例、任务与操作记录
 server/callback   业务动作回调与执行记录
 ```
