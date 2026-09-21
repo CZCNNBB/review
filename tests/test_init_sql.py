@@ -41,7 +41,7 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertTrue(self.statements)
         for statement in self.statements:
             head = statement.split(None, 1)[0].upper()
-            self.assertIn(head, {"CREATE", "INSERT", "COMMENT", "--"})
+            self.assertIn(head, {"CREATE", "ALTER", "INSERT", "COMMENT", "--"})
 
     def test_script_has_no_dollar_quoted_block(self) -> None:
         """脚本不能包含 DO $$ 块，否则按分号拆分会被破坏。"""
@@ -65,13 +65,14 @@ class InitializationSqlTestCase(unittest.TestCase):
             self.assertNotIn("init.sql", source, python_file.name)
 
     def test_process_schema_and_tables_are_declared(self) -> None:
-        """脚本声明了 process Schema 和三张表。"""
+        """脚本声明了 process Schema 和四张流程定义表。"""
 
         self.assertIn("CREATE SCHEMA IF NOT EXISTS process", self.sql_content)
         for table_name in (
             "process.node_definition",
             "process.approval_process",
-            "process.approval_process_node",
+            "process.approval_process_version",
+            "process.approval_process_version_node",
         ):
             self.assertIn(f"CREATE TABLE IF NOT EXISTS {table_name}", self.sql_content)
 
@@ -98,18 +99,42 @@ class InitializationSqlTestCase(unittest.TestCase):
         )
 
     def test_process_tables_and_columns_have_comments(self) -> None:
-        """审批流三张表和关键字段都带注释。"""
+        """审批流四张表和关键字段都带注释。"""
 
         for table_name in (
             "process.node_definition",
             "process.approval_process",
-            "process.approval_process_node",
+            "process.approval_process_version",
+            "process.approval_process_version_node",
         ):
             self.assertIn(f"COMMENT ON TABLE {table_name} IS", self.sql_content)
             self.assertIn(
                 f"COMMENT ON COLUMN {table_name}.id IS",
                 self.sql_content,
             )
+
+    def test_process_version_constraints_are_declared(self) -> None:
+        """版本号、单草稿和当前版本关系由数据库约束兜底。"""
+
+        self.assertIn("UNIQUE (process_id, version_no)", self.sql_content)
+        self.assertIn(
+            "ux_process_approval_process_version_one_draft",
+            self.sql_content,
+        )
+        self.assertIn("ADD COLUMN IF NOT EXISTS current_version_id UUID", self.sql_content)
+
+    def test_empty_table_upgrade_script_has_data_guard(self) -> None:
+        """一次性升级脚本必须在删除旧表前拒绝非空流程表。"""
+
+        migration_path = (
+            INITIALIZATION_SQL_PATH.parent
+            / "migrations"
+            / "20260921_process_version_upgrade.sql"
+        )
+        migration_content = migration_path.read_text(encoding="utf-8")
+        self.assertIn("IF EXISTS (SELECT 1 FROM process.approval_process", migration_content)
+        self.assertIn("RAISE EXCEPTION", migration_content)
+        self.assertIn("DROP TABLE IF EXISTS process.approval_process_node", migration_content)
 
     def test_process_binding_table_is_not_created_yet(self) -> None:
         """租户流程授权表推迟到租户模块实现，本次不建表。"""

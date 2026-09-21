@@ -1,21 +1,25 @@
-"""审批流定义和流程节点实例数据访问实现。"""
+"""审批流主体、流程版本和版本节点数据访问实现。"""
 
 from uuid import UUID
 
 from sqlmodel import Session, func, select
 
-from app.server.process.src.constants import PROCESS_STATUS_ENABLED
+from app.server.process.src.constants import (
+    PROCESS_STATUS_ENABLED,
+    PROCESS_VERSION_STATUS_DRAFT,
+)
 from app.server.process.src.models.process_model import (
     ApprovalProcess,
-    ApprovalProcessNode,
+    ApprovalProcessVersion,
+    ApprovalProcessVersionNode,
 )
 
 
 class ProcessRepository:
-    """封装审批流主体和流程节点实例的数据库查询。"""
+    """封装审批流、版本和版本节点的数据库查询。"""
 
     def add_process(self, process: ApprovalProcess, db: Session) -> None:
-        """将审批流主体加入当前数据库事务。"""
+        """将审批流主体加入当前事务。"""
 
         db.add(process)
 
@@ -23,6 +27,21 @@ class ProcessRepository:
         """按主键查询审批流主体。"""
 
         return db.get(ApprovalProcess, process_id)
+
+    def get_process_for_update(
+        self,
+        process_id: UUID,
+        db: Session,
+    ) -> ApprovalProcess | None:
+        """锁定并刷新流程主体，串行化草稿创建、发布和停用操作。"""
+
+        statement = (
+            select(ApprovalProcess)
+            .where(ApprovalProcess.id == process_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        return db.exec(statement).first()
 
     def list_processes(
         self,
@@ -40,43 +59,94 @@ class ProcessRepository:
         )
         return list(db.exec(statement).all())
 
-    def count_nodes_by_process_ids(
-        self,
-        process_ids: list[UUID],
-        db: Session,
-    ) -> dict[UUID, int]:
-        """批量统计每条流程的节点数量，避免列表查询出现 N+1。"""
+    def add_version(self, version: ApprovalProcessVersion, db: Session) -> None:
+        """将流程版本加入当前事务。"""
 
-        if not process_ids:
-            return {}
+        db.add(version)
+
+    def get_version_by_id(
+        self,
+        version_id: UUID,
+        db: Session,
+    ) -> ApprovalProcessVersion | None:
+        """按主键查询流程版本。"""
+
+        return db.get(ApprovalProcessVersion, version_id)
+
+    def get_version_for_update(
+        self,
+        version_id: UUID,
+        db: Session,
+    ) -> ApprovalProcessVersion | None:
+        """锁定并刷新流程版本，保证 revision 校验和发布原子执行。"""
 
         statement = (
-            select(ApprovalProcessNode.process_id, func.count())
-            .where(ApprovalProcessNode.process_id.in_(process_ids))
-            .group_by(ApprovalProcessNode.process_id)
+            select(ApprovalProcessVersion)
+            .where(ApprovalProcessVersion.id == version_id)
+            .with_for_update()
+            .execution_options(populate_existing=True)
         )
-        return {
-            process_id: node_count
-            for process_id, node_count in db.exec(statement).all()
-        }
+        return db.exec(statement).first()
 
-    def add_node(self, node: ApprovalProcessNode, db: Session) -> None:
-        """将流程节点实例加入当前数据库事务。"""
+    def list_versions(
+        self,
+        process_id: UUID,
+        db: Session,
+    ) -> list[ApprovalProcessVersion]:
+        """按版本号倒序查询一条流程的全部版本。"""
+
+        statement = (
+            select(ApprovalProcessVersion)
+            .where(ApprovalProcessVersion.process_id == process_id)
+            .order_by(ApprovalProcessVersion.version_no.desc())
+        )
+        return list(db.exec(statement).all())
+
+    def get_draft_version(
+        self,
+        process_id: UUID,
+        db: Session,
+    ) -> ApprovalProcessVersion | None:
+        """查询一条流程唯一的草稿版本。"""
+
+        statement = select(ApprovalProcessVersion).where(
+            ApprovalProcessVersion.process_id == process_id,
+            ApprovalProcessVersion.status == PROCESS_VERSION_STATUS_DRAFT,
+        )
+        return db.exec(statement).first()
+
+    def get_latest_version_no(self, process_id: UUID, db: Session) -> int:
+        """查询流程当前最大版本号，没有版本时返回零。"""
+
+        statement = select(func.max(ApprovalProcessVersion.version_no)).where(
+            ApprovalProcessVersion.process_id == process_id
+        )
+        return int(db.exec(statement).one() or 0)
+
+    def add_node(self, node: ApprovalProcessVersionNode, db: Session) -> None:
+        """将版本节点加入当前事务。"""
 
         db.add(node)
 
-    def delete_node(self, node: ApprovalProcessNode, db: Session) -> None:
-        """在当前数据库事务中删除流程节点实例。"""
+    def delete_node(self, node: ApprovalProcessVersionNode, db: Session) -> None:
+        """从当前事务删除草稿版本节点。"""
 
         db.delete(node)
 
-    def list_nodes(self, process_id: UUID, db: Session) -> list[ApprovalProcessNode]:
-        """按创建时间正序查询一条流程的全部节点实例。"""
+    def list_nodes(
+        self,
+        version_id: UUID,
+        db: Session,
+    ) -> list[ApprovalProcessVersionNode]:
+        """按创建时间和主键稳定排序查询版本的全部节点。"""
 
         statement = (
-            select(ApprovalProcessNode)
-            .where(ApprovalProcessNode.process_id == process_id)
-            .order_by(ApprovalProcessNode.created_at.asc(), ApprovalProcessNode.id.asc())
+            select(ApprovalProcessVersionNode)
+            .where(ApprovalProcessVersionNode.process_version_id == version_id)
+            .order_by(
+                ApprovalProcessVersionNode.created_at.asc(),
+                ApprovalProcessVersionNode.id.asc(),
+            )
         )
         return list(db.exec(statement).all())
 
@@ -84,40 +154,55 @@ class ProcessRepository:
         self,
         node_ids: list[UUID],
         db: Session,
-    ) -> list[ApprovalProcessNode]:
-        """批量按主键查询节点实例。
-
-        这里有意不按 process_id 过滤：保存流程时需要确认前端提交的节点 ID 没有被
-        其它流程占用，否则平凡更新会覆盖掉别人的节点数据。
-        """
+    ) -> list[ApprovalProcessVersionNode]:
+        """跨版本查询节点 ID，用于阻止前端节点 ID 覆盖其它版本。"""
 
         if not node_ids:
             return []
-
-        statement = select(ApprovalProcessNode).where(
-            ApprovalProcessNode.id.in_(node_ids)
+        statement = select(ApprovalProcessVersionNode).where(
+            ApprovalProcessVersionNode.id.in_(node_ids)
         )
         return list(db.exec(statement).all())
+
+    def count_nodes_by_version_ids(
+        self,
+        version_ids: list[UUID],
+        db: Session,
+    ) -> dict[UUID, int]:
+        """批量统计多个版本的节点数量。"""
+
+        if not version_ids:
+            return {}
+        statement = (
+            select(ApprovalProcessVersionNode.process_version_id, func.count())
+            .where(ApprovalProcessVersionNode.process_version_id.in_(version_ids))
+            .group_by(ApprovalProcessVersionNode.process_version_id)
+        )
+        return {
+            version_id: node_count
+            for version_id, node_count in db.exec(statement).all()
+        }
 
     def has_enabled_process_reference(
         self,
         node_definition_id: UUID,
         db: Session,
     ) -> bool:
-        """判断节点定义是否已经被任意已启用流程引用。
-
-        这里只读取一条主键即可，不加载完整流程和节点，避免节点定义更新时产生
-        不必要的数据读取。
-        """
+        """判断节点定义是否被任意已启用流程的当前版本引用。"""
 
         statement = (
-            select(ApprovalProcessNode.id)
+            select(ApprovalProcessVersionNode.id)
+            .join(
+                ApprovalProcessVersion,
+                ApprovalProcessVersion.id
+                == ApprovalProcessVersionNode.process_version_id,
+            )
             .join(
                 ApprovalProcess,
-                ApprovalProcess.id == ApprovalProcessNode.process_id,
+                ApprovalProcess.current_version_id == ApprovalProcessVersion.id,
             )
             .where(
-                ApprovalProcessNode.node_definition_id == node_definition_id,
+                ApprovalProcessVersionNode.node_definition_id == node_definition_id,
                 ApprovalProcess.status == PROCESS_STATUS_ENABLED,
             )
             .limit(1)

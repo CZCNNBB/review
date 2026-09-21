@@ -2,12 +2,14 @@
 
 from app.server.process.src.models.process_model import (
     ApprovalProcess,
-    ApprovalProcessNode,
+    ApprovalProcessVersion,
+    ApprovalProcessVersionNode,
     NodeDefinition,
 )
 
 __all__ = [
     "NodeDefinition",
     "ApprovalProcess",
-    "ApprovalProcessNode",
+    "ApprovalProcessVersion",
+    "ApprovalProcessVersionNode",
 ]

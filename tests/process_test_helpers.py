@@ -117,8 +117,22 @@ class DatabaseTestCaseMixin:
 
         cleanup_groups: list[tuple[str, str, dict[str, list[UUID]] | None]] = [
             (
-                "流程节点实例",
-                "DELETE FROM process.approval_process_node "
+                "清空流程当前版本引用",
+                "UPDATE process.approval_process SET current_version_id = NULL "
+                "WHERE id = ANY(:ids)",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "流程版本节点",
+                "DELETE FROM process.approval_process_version_node "
+                "WHERE process_version_id IN ("
+                "SELECT id FROM process.approval_process_version "
+                "WHERE process_id = ANY(:ids))",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "流程版本",
+                "DELETE FROM process.approval_process_version "
                 "WHERE process_id = ANY(:ids)",
                 {"ids": self._created_process_ids},
             ),

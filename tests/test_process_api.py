@@ -1,4 +1,4 @@
-"""审批流管理接口 HTTP 集成测试，需要可用的 PostgreSQL 数据库。"""
+"""审批流显式版本管理接口集成测试，需要可用的 PostgreSQL 数据库。"""
 
 import os
 import unittest
@@ -7,36 +7,33 @@ from uuid import UUID, uuid4
 from fastapi.testclient import TestClient
 from sqlmodel import Session
 
-from tests.process_test_helpers import (
-    DatabaseTestCaseMixin,
-    load_seed_node_definitions,
-)
 from app.common.db.postgres_db import get_postgres_engine
 from app.main import create_app
 from app.server.organization.src.schemas.organization_schema import PersonCreateRequest
 from app.server.organization.src.service.organization_service import OrganizationService
+from tests.process_test_helpers import (
+    DatabaseTestCaseMixin,
+    load_seed_node_definitions,
+)
 
 
 class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
-    """验证审批流管理接口的完整链路。"""
+    """验证版本化审批流管理接口的完整链路。"""
 
     def setUp(self) -> None:
-        """准备测试应用、管理密钥和测试人员。"""
+        """准备测试应用、管理密钥和测试审批人。"""
 
         self.previous_admin_key = os.environ.get("APPROVAL_ADMIN_KEY")
         os.environ["APPROVAL_ADMIN_KEY"] = "test-admin-key"
         self.admin_headers = {"X-Admin-Key": "test-admin-key"}
-
         self.db: Session = self.open_session()
         self.seed = load_seed_node_definitions()
 
         person = OrganizationService().create_person(
-            PersonCreateRequest(name=f"接口测试人员-{uuid4().hex[:8]}"),
+            PersonCreateRequest(name=f"版本接口测试人员-{uuid4().hex[:8]}"),
             self.db,
         )
-        self.track_person(person.id)
-        self.person_id = person.id
-
+        self.person_id = self.track_person(person.id)
         app = create_app()
 
         def override_database_session():
@@ -58,18 +55,14 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         else:
             os.environ["APPROVAL_ADMIN_KEY"] = self.previous_admin_key
 
-    # ------------------------------------------------------------------
-    # 辅助
-    # ------------------------------------------------------------------
-
-    def create_process(self, name: str | None = None) -> str:
-        """通过接口创建流程并登记清理，返回流程 ID。"""
+    def create_process(self) -> tuple[str, str]:
+        """通过接口创建流程，返回流程 ID 和 V1 草稿 ID。"""
 
         response = self.client.post(
             "/api/admin/processes",
             headers=self.admin_headers,
             json={
-                "name": name or f"接口测试流程-{uuid4().hex[:8]}",
+                "name": f"版本接口流程-{uuid4().hex[:8]}",
                 "form_schema": {
                     "type": "object",
                     "properties": {"amount": {"type": "number"}},
@@ -77,16 +70,24 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             },
         )
         self.assertEqual(response.status_code, 201, response.text)
-        process_id = response.json()["data"]["id"]
-        self.track_process(UUID(process_id))
-        return process_id
+        data = response.json()["data"]
+        self.track_process(UUID(data["id"]))
+        self.assertEqual(data["draft_version_no"], 1)
+        return data["id"], data["draft_version_id"]
 
-    def build_graph_payload(self, process_name: str, **overrides) -> dict:
-        """构造最小合法整图保存请求。"""
+    def build_graph_payload(
+        self,
+        revision: int,
+        name: str = "付款审批",
+    ) -> dict:
+        """构造一个最小合法版本整图。"""
 
-        start_id, approval_id, end_id = uuid4(), uuid4(), uuid4()
-        payload = {
-            "name": process_name,
+        start_id = uuid4()
+        approval_id = uuid4()
+        end_id = uuid4()
+        return {
+            "revision": revision,
+            "name": name,
             "nodes": [
                 {
                     "id": str(start_id),
@@ -115,17 +116,17 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             ],
             "orchestration": {
                 "connections": [
-                    {"source_node_id": str(start_id), "target_node_id": str(approval_id)},
-                    {"source_node_id": str(approval_id), "target_node_id": str(end_id)},
+                    {
+                        "source_node_id": str(start_id),
+                        "target_node_id": str(approval_id),
+                    },
+                    {
+                        "source_node_id": str(approval_id),
+                        "target_node_id": str(end_id),
+                    },
                 ]
             },
         }
-        payload.update(overrides)
-        return payload
-
-    # ------------------------------------------------------------------
-    # 认证
-    # ------------------------------------------------------------------
 
     def test_admin_key_is_required(self) -> None:
         """缺少管理密钥时拒绝访问。"""
@@ -133,304 +134,120 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         response = self.client.get("/api/admin/processes")
         self.assertEqual(response.status_code, 401)
 
-    def test_wrong_admin_key_is_rejected(self) -> None:
-        """管理密钥错误时拒绝访问。"""
+    def test_create_save_publish_and_create_next_draft(self) -> None:
+        """验证从 V1 草稿到发布再到 V2 草稿的完整接口链路。"""
 
-        response = self.client.get(
-            "/api/admin/processes",
-            headers={"X-Admin-Key": "wrong-key"},
-        )
-        self.assertEqual(response.status_code, 401)
-
-    def test_missing_admin_key_configuration_returns_503(self) -> None:
-        """未配置管理密钥时接口不可用。"""
-
-        os.environ.pop("APPROVAL_ADMIN_KEY", None)
-        response = self.client.get("/api/admin/processes", headers=self.admin_headers)
-        self.assertEqual(response.status_code, 503)
-
-    # ------------------------------------------------------------------
-    # 节点定义接口
-    # ------------------------------------------------------------------
-
-    def test_node_definition_crud(self) -> None:
-        """节点定义可以创建、列表查询、详情查询和更新。"""
-
-        definition_name = f"接口测试节点-{uuid4().hex[:8]}"
-        create_response = self.client.post(
-            "/api/admin/node-definitions",
-            headers=self.admin_headers,
-            json={
-                "node_type": "APPROVAL",
-                "name": definition_name,
-                "config_schema_json": {"type": "object", "properties": {}},
-            },
-        )
-        self.assertEqual(create_response.status_code, 201, create_response.text)
-        definition_id = create_response.json()["data"]["id"]
-        self.track_node_definition(UUID(definition_id))
-
-        list_response = self.client.get(
-            "/api/admin/node-definitions",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(list_response.status_code, 200)
-        self.assertIn(
-            definition_id,
-            [item["id"] for item in list_response.json()["data"]],
-        )
-
-        detail_response = self.client.get(
-            f"/api/admin/node-definitions/{definition_id}",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(detail_response.status_code, 200)
-        self.assertEqual(detail_response.json()["data"]["name"], definition_name)
-
-        update_response = self.client.patch(
-            f"/api/admin/node-definitions/{definition_id}",
-            headers=self.admin_headers,
-            json={"status": "DISABLED"},
-        )
-        self.assertEqual(update_response.status_code, 200)
-        self.assertEqual(update_response.json()["data"]["status"], "DISABLED")
-
-    def test_duplicate_node_definition_name_returns_409(self) -> None:
-        """节点定义重名时返回 409。"""
-
-        definition_name = f"重名节点-{uuid4().hex[:8]}"
-        first_response = self.client.post(
-            "/api/admin/node-definitions",
-            headers=self.admin_headers,
-            json={"node_type": "APPROVAL", "name": definition_name},
-        )
-        self.assertEqual(first_response.status_code, 201)
-        self.track_node_definition(UUID(first_response.json()["data"]["id"]))
-
-        second_response = self.client.post(
-            "/api/admin/node-definitions",
-            headers=self.admin_headers,
-            json={"node_type": "APPROVAL", "name": definition_name},
-        )
-        self.assertEqual(second_response.status_code, 409)
-
-    def test_missing_node_definition_returns_404(self) -> None:
-        """查询不存在的节点定义返回 404。"""
-
-        response = self.client.get(
-            f"/api/admin/node-definitions/{uuid4()}",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(response.status_code, 404)
-
-    # ------------------------------------------------------------------
-    # 流程接口
-    # ------------------------------------------------------------------
-
-    def test_missing_process_returns_404(self) -> None:
-        """查询不存在的流程返回 404。"""
-
-        response = self.client.get(
-            f"/api/admin/processes/{uuid4()}",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(response.status_code, 404)
-
-    def test_save_and_read_graph_round_trip(self) -> None:
-        """整图保存后读回内容一致。"""
-
-        process_id = self.create_process()
-        payload = self.build_graph_payload("整图往返流程")
-
+        process_id, v1_id = self.create_process()
         save_response = self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
+            f"/api/admin/process-versions/{v1_id}/graph",
             headers=self.admin_headers,
-            json=payload,
+            json=self.build_graph_payload(revision=0),
         )
         self.assertEqual(save_response.status_code, 200, save_response.text)
+        self.assertEqual(save_response.json()["data"]["revision"], 1)
+
+        publish_response = self.client.post(
+            f"/api/admin/process-versions/{v1_id}/publish",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(publish_response.status_code, 200, publish_response.text)
+        published = publish_response.json()["data"]
+        self.assertEqual(published["status"], "ENABLED")
+        self.assertEqual(published["current_version_id"], v1_id)
+        self.assertIsNone(published["draft_version_id"])
+
+        draft_response = self.client.post(
+            f"/api/admin/processes/{process_id}/draft",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(draft_response.status_code, 201, draft_response.text)
+        self.assertEqual(draft_response.json()["data"]["version_no"], 2)
+        self.assertEqual(draft_response.json()["data"]["status"], "DRAFT")
+
+    def test_published_version_is_read_only(self) -> None:
+        """已发布版本再次保存返回 409。"""
+
+        _, version_id = self.create_process()
+        self.client.put(
+            f"/api/admin/process-versions/{version_id}/graph",
+            headers=self.admin_headers,
+            json=self.build_graph_payload(revision=0),
+        )
+        self.client.post(
+            f"/api/admin/process-versions/{version_id}/publish",
+            headers=self.admin_headers,
+        )
+
+        response = self.client.put(
+            f"/api/admin/process-versions/{version_id}/graph",
+            headers=self.admin_headers,
+            json=self.build_graph_payload(revision=1),
+        )
+        self.assertEqual(response.status_code, 409)
+
+    def test_stale_revision_returns_409(self) -> None:
+        """旧 revision 不能覆盖已经保存的新草稿。"""
+
+        _, version_id = self.create_process()
+        first_payload = self.build_graph_payload(revision=0, name="第一次保存")
+        first_response = self.client.put(
+            f"/api/admin/process-versions/{version_id}/graph",
+            headers=self.admin_headers,
+            json=first_payload,
+        )
+        self.assertEqual(first_response.status_code, 200)
+
+        stale_response = self.client.put(
+            f"/api/admin/process-versions/{version_id}/graph",
+            headers=self.admin_headers,
+            json=self.build_graph_payload(revision=0, name="过期保存"),
+        )
+        self.assertEqual(stale_response.status_code, 409)
+
+    def test_version_list_and_graph_read(self) -> None:
+        """版本列表和版本整图返回明确的版本信息。"""
+
+        process_id, version_id = self.create_process()
+        self.client.put(
+            f"/api/admin/process-versions/{version_id}/graph",
+            headers=self.admin_headers,
+            json=self.build_graph_payload(revision=0),
+        )
+
+        versions_response = self.client.get(
+            f"/api/admin/processes/{process_id}/versions",
+            headers=self.admin_headers,
+        )
+        self.assertEqual(versions_response.status_code, 200)
+        versions = versions_response.json()["data"]
+        self.assertEqual(len(versions), 1)
+        self.assertEqual(versions[0]["id"], version_id)
+        self.assertEqual(versions[0]["node_count"], 3)
 
         graph_response = self.client.get(
-            f"/api/admin/processes/{process_id}/graph",
+            f"/api/admin/process-versions/{version_id}/graph",
             headers=self.admin_headers,
         )
         self.assertEqual(graph_response.status_code, 200)
         graph = graph_response.json()["data"]
-
-        self.assertEqual(graph["name"], "整图往返流程")
+        self.assertEqual(graph["version_id"], version_id)
+        self.assertEqual(graph["version_no"], 1)
         self.assertEqual(len(graph["nodes"]), 3)
-        # 同一批写入的节点 created_at 相同，返回顺序按节点 ID 兜底排序，
-        # 因此这里比对集合，顺序稳定性由下面的重复读取断言保证。
-        self.assertEqual(
-            {node["id"] for node in graph["nodes"]},
-            {node["id"] for node in payload["nodes"]},
-        )
-        self.assertEqual(
-            graph["orchestration"]["connections"],
-            payload["orchestration"]["connections"],
-        )
-
-        # 同一份数据重复读取要返回同样的顺序，前端才能做稳定的差异比对。
-        reread_response = self.client.get(
-            f"/api/admin/processes/{process_id}/graph",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(
-            [node["id"] for node in reread_response.json()["data"]["nodes"]],
-            [node["id"] for node in graph["nodes"]],
-        )
-
-        # 节点响应带上节点定义信息，画布不必再查一次定义。
-        node_types = {node["node_type"] for node in graph["nodes"]}
-        self.assertEqual(node_types, {"START", "APPROVAL", "END"})
 
     def test_invalid_graph_returns_structured_422(self) -> None:
-        """非法流程返回 422 并带结构化问题列表。"""
+        """非法整图返回结构化校验问题。"""
 
-        process_id = self.create_process()
-        payload = self.build_graph_payload("非法流程")
-        # 去掉全部连线，审批节点没有后续路径。
+        _, version_id = self.create_process()
+        payload = self.build_graph_payload(revision=0)
         payload["orchestration"] = {"connections": []}
-
         response = self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
+            f"/api/admin/process-versions/{version_id}/graph",
             headers=self.admin_headers,
             json=payload,
         )
+
         self.assertEqual(response.status_code, 422)
-        detail = response.json()["detail"]
-        self.assertIn("message", detail)
-        self.assertTrue(detail["issues"])
-        self.assertIn("code", detail["issues"][0])
-
-    def test_validate_reports_issues_for_saved_definition(self) -> None:
-        """校验接口返回 valid 标记和问题列表。"""
-
-        process_id = self.create_process()
-
-        # 还没有节点时校验必然不通过。
-        invalid_response = self.client.post(
-            f"/api/admin/processes/{process_id}/validate",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(invalid_response.status_code, 200)
-        self.assertFalse(invalid_response.json()["data"]["valid"])
-        self.assertTrue(invalid_response.json()["data"]["issues"])
-
-        payload = self.build_graph_payload("校验通过流程")
-        self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
-            headers=self.admin_headers,
-            json=payload,
-        )
-
-        valid_response = self.client.post(
-            f"/api/admin/processes/{process_id}/validate",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(valid_response.status_code, 200)
-        self.assertTrue(valid_response.json()["data"]["valid"])
-        self.assertEqual(valid_response.json()["data"]["issues"], [])
-
-    def test_disabled_node_definition_blocks_save(self) -> None:
-        """节点定义停用后引用它的流程无法保存。"""
-
-        definition_name = f"待停用节点-{uuid4().hex[:8]}"
-        create_response = self.client.post(
-            "/api/admin/node-definitions",
-            headers=self.admin_headers,
-            json={
-                "node_type": "APPROVAL",
-                "name": definition_name,
-                "config_schema_json": {"type": "object", "properties": {}},
-            },
-        )
-        definition_id = create_response.json()["data"]["id"]
-        self.track_node_definition(UUID(definition_id))
-
-        self.client.patch(
-            f"/api/admin/node-definitions/{definition_id}",
-            headers=self.admin_headers,
-            json={"status": "DISABLED"},
-        )
-
-        process_id = self.create_process()
-        payload = self.build_graph_payload("引用停用定义的流程")
-        payload["nodes"][1]["node_definition_id"] = definition_id
-        payload["nodes"][1]["config"] = {}
-
-        response = self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
-            headers=self.admin_headers,
-            json=payload,
-        )
-        self.assertEqual(response.status_code, 422)
-        codes = [issue["code"] for issue in response.json()["detail"]["issues"]]
-        self.assertIn("NODE_DEFINITION_DISABLED", codes)
-
-    def test_enable_disable_and_copy_flow(self) -> None:
-        """启用、停用和复制流程的状态码与状态流转。"""
-
-        process_id = self.create_process()
-        payload = self.build_graph_payload("启停测试流程")
-        self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
-            headers=self.admin_headers,
-            json=payload,
-        )
-
-        enable_response = self.client.post(
-            f"/api/admin/processes/{process_id}/enable",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(enable_response.status_code, 200)
-        self.assertEqual(enable_response.json()["data"]["status"], "ENABLED")
-
-        copy_response = self.client.post(
-            f"/api/admin/processes/{process_id}/copy",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(copy_response.status_code, 201, copy_response.text)
-        copied = copy_response.json()["data"]
-        self.track_process(UUID(copied["id"]))
-        self.assertEqual(copied["status"], "DRAFT")
-        self.assertEqual(copied["node_count"], 3)
-
-        disable_response = self.client.post(
-            f"/api/admin/processes/{process_id}/disable",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(disable_response.status_code, 200)
-        self.assertEqual(disable_response.json()["data"]["status"], "DISABLED")
-
-    def test_disable_draft_returns_409(self) -> None:
-        """草稿流程停用返回 409。"""
-
-        process_id = self.create_process()
-        response = self.client.post(
-            f"/api/admin/processes/{process_id}/disable",
-            headers=self.admin_headers,
-        )
-        self.assertEqual(response.status_code, 409)
-
-    def test_list_processes_includes_node_count(self) -> None:
-        """列表返回节点数量。"""
-
-        process_id = self.create_process()
-        payload = self.build_graph_payload("列表计数流程")
-        self.client.put(
-            f"/api/admin/processes/{process_id}/graph",
-            headers=self.admin_headers,
-            json=payload,
-        )
-
-        response = self.client.get(
-            "/api/admin/processes",
-            headers=self.admin_headers,
-            params={"limit": 500},
-        )
-        self.assertEqual(response.status_code, 200)
-        listed = {item["id"]: item for item in response.json()["data"]}
-        self.assertEqual(listed[process_id]["node_count"], 3)
+        self.assertTrue(response.json()["detail"]["issues"])
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@
 
 这是审批中心使用的 FastAPI 后端脚手架。当前采用“微服务预备架构”：所有服务先放在一个 FastAPI 项目中运行，但每个服务模块都拥有独立的 `api` 接口层和 `src` 业务逻辑层，后续可以按需拆成真正的独立微服务。
 
-数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema，人员与组织服务使用 `organization` Schema，审批流维护服务使用 `process` Schema。
+数据库采用“每个 server 一个 PostgreSQL Schema”的约定。当前租户服务使用 `tenant` Schema，人员与组织服务使用 `organization` Schema，审批流定义和运行统一使用 `process` Schema。
 
 ## 设计文档
 
@@ -12,6 +12,7 @@
 - `app/server/tenant/docs/租户作用域设计.md`：可选租户模式、TenantScope 和分表资源绑定设计。
 - `app/server/organization/docs/人员与组织模块设计.md`：人员、部门及已经落地的租户解耦设计。
 - `app/server/process/docs/审批流模块设计.md`：节点能力、流程编排、审批人和租户使用权设计。
+- `app/server/process/docs/审批流运行模块设计.md`：显式版本、审批实例、节点执行、任务和审批记录设计。
 - `app/server/process/docs/README.md`：审批流维护模块的实现说明，包含种子节点定义、校验规则码和 JSON 字段写入约束。
 - 其他模块的设计文档统一存放在各自 `app/server/<module>/docs/` 下。
 
@@ -46,17 +47,12 @@ backend/
         docs/                     # 人员与组织模块文档
         src/                      # 独立的人员与组织业务逻辑
 
-      process/                    # 审批流定义与流程编排
+      process/                    # 审批流定义、版本、执行引擎与审批运行
         api/
         docs/
         src/
 
       integration/                # 业务动作与接入配置
-        api/
-        docs/
-        src/
-
-      approval/                   # 审批实例、快照、任务和审批记录
         api/
         docs/
         src/
@@ -166,6 +162,14 @@ backend/data/init.sql
 新增模块时向该文件追加 Schema、表、外键、索引和 `COMMENT` 注释，保持注释与结构一致。
 正式环境出现结构变更后应引入数据库迁移工具，`init.sql` 继续负责全新环境首次建库。
 
+旧审批流三表结构为空时，执行下面的一次性升级脚本切换到显式版本结构：
+
+```text
+backend/data/migrations/20260921_process_version_upgrade.sql
+```
+
+脚本会先检查旧流程主体表是否为空，发现数据会主动中止。
+
 ## 当前接口
 
 ```text
@@ -202,13 +206,14 @@ PATCH /api/admin/node-definitions/{node_definition_id}
 POST /api/admin/processes
 GET  /api/admin/processes
 GET  /api/admin/processes/{process_id}
-PATCH /api/admin/processes/{process_id}
+GET  /api/admin/processes/{process_id}/versions
+POST /api/admin/processes/{process_id}/draft
 POST /api/admin/processes/{process_id}/copy
-POST /api/admin/processes/{process_id}/enable
 POST /api/admin/processes/{process_id}/disable
-GET  /api/admin/processes/{process_id}/graph
-PUT  /api/admin/processes/{process_id}/graph
-POST /api/admin/processes/{process_id}/validate
+GET  /api/admin/process-versions/{version_id}/graph
+PUT  /api/admin/process-versions/{version_id}/graph
+POST /api/admin/process-versions/{version_id}/validate
+POST /api/admin/process-versions/{version_id}/publish
 ```
 
 `/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
@@ -217,7 +222,7 @@ POST /api/admin/processes/{process_id}/validate
 
 ```text
 server/integration 业务动作与接入配置
-server/approval   审批实例、任务与操作记录
+server/process   流程版本、审批实例、节点执行、任务与操作记录
 server/callback   业务动作回调与执行记录
 ```
 

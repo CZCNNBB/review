@@ -12,9 +12,9 @@ from app.server.process.src.schemas.process_schema import (
     ProcessGraphResponse,
     ProcessGraphSaveRequest,
     ProcessResponse,
-    ProcessUpdateRequest,
     ProcessValidationIssueResponse,
     ProcessValidationResponse,
+    ProcessVersionResponse,
 )
 
 __all__ = [
@@ -27,7 +27,7 @@ __all__ = [
     "ProcessGraphResponse",
     "ProcessGraphSaveRequest",
     "ProcessResponse",
-    "ProcessUpdateRequest",
     "ProcessValidationIssueResponse",
     "ProcessValidationResponse",
+    "ProcessVersionResponse",
 ]

@@ -53,6 +53,8 @@ tmp/
 # 必须进版本库。这里用 data/* 而不是 data/，否则被排除的目录内的文件无法重新放行。
 data/*
 !data/init.sql
+!data/migrations/
+!data/migrations/*.sql
 *.db
 *.sqlite
 *.sqlite3

@@ -9,7 +9,8 @@ from sqlmodel import Session
 from tests.process_test_helpers import DatabaseTestCaseMixin
 from app.server.process.src.models.process_model import (
     ApprovalProcess,
-    ApprovalProcessNode,
+    ApprovalProcessVersion,
+    ApprovalProcessVersionNode,
 )
 from app.server.process.src.schemas.node_definition_schema import (
     NodeDefinitionCreateRequest,
@@ -75,16 +76,31 @@ class NodeDefinitionServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         )
         self.db.add(process)
         self.db.flush()
+        version = ApprovalProcessVersion(
+            process_id=process.id,
+            version_no=1,
+            status="PUBLISHED",
+            name=process.name,
+            form_schema_json={},
+            form_ui_schema_json={},
+            orchestration_json={"connections": []},
+            revision=0,
+        )
+        self.db.add(version)
+        self.db.flush()
         self.db.add(
-            ApprovalProcessNode(
+            ApprovalProcessVersionNode(
                 id=uuid4(),
-                process_id=process.id,
+                process_version_id=version.id,
                 node_definition_id=definition_id,
+                node_type="APPROVAL",
                 name="被引用节点",
                 config_json={},
                 position_json={},
             )
         )
+        process.current_version_id = version.id
+        self.db.add(process)
         self.db.commit()
         self.track_process(process.id)
         return process
