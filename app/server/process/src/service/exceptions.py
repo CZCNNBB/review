@@ -1,4 +1,8 @@
-"""审批流定义模块领域异常。"""
+"""审批流定义与运行模块领域异常。
+
+审批运行的异常继承对应的定义模块异常，接口层可以共用同一套错误映射，只有“操作人
+不是任务处理人”需要单独返回 403。
+"""
 
 from typing import TYPE_CHECKING
 
@@ -38,3 +42,19 @@ class ProcessValidationError(ProcessServiceError):
 
         super().__init__(message)
         self.issues: list["ValidationIssue"] = issues or []
+
+
+class ApprovalNotFoundError(ProcessNotFoundError):
+    """指定审批实例、节点执行或审批任务不存在。"""
+
+
+class ApprovalStateError(ProcessStateError):
+    """当前审批状态不允许执行该操作，例如实例已结束或任务已被处理。"""
+
+
+class ApprovalConflictError(ProcessConflictError):
+    """并发审批操作冲突，需要重新读取当前状态后重试。"""
+
+
+class ApprovalPermissionError(ProcessServiceError):
+    """当前操作人不是该审批任务的处理人。"""

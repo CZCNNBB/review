@@ -115,11 +115,44 @@ class DatabaseTestCaseMixin:
         开发库里。失败信息会汇总抛出，让残留问题在测试结果里直接暴露。
         """
 
+        # 运行数据的删除顺序：先解除实例对活动节点的引用，再按依赖从深到浅删除。
+        process_instance_ids = (
+            "SELECT id FROM process.approval_instance WHERE process_id = ANY(:ids)"
+        )
         cleanup_groups: list[tuple[str, str, dict[str, list[UUID]] | None]] = [
             (
                 "清空流程当前版本引用",
                 "UPDATE process.approval_process SET current_version_id = NULL "
                 "WHERE id = ANY(:ids)",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "清空实例当前节点引用",
+                "UPDATE process.approval_instance SET current_node_execution_id = NULL "
+                f"WHERE id IN ({process_instance_ids})",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "审批记录",
+                "DELETE FROM process.approval_record "
+                f"WHERE instance_id IN ({process_instance_ids})",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "审批任务",
+                "DELETE FROM process.approval_task "
+                f"WHERE instance_id IN ({process_instance_ids})",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "节点执行记录",
+                "DELETE FROM process.approval_node_execution "
+                f"WHERE instance_id IN ({process_instance_ids})",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                "审批实例",
+                "DELETE FROM process.approval_instance WHERE process_id = ANY(:ids)",
                 {"ids": self._created_process_ids},
             ),
             (

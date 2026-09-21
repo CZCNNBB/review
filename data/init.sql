@@ -269,6 +269,192 @@ CREATE INDEX IF NOT EXISTS ix_process_approval_process_version_node_definition_i
 CREATE INDEX IF NOT EXISTS ix_process_approval_process_version_node_type
     ON process.approval_process_version_node (node_type);
 
+-- ============================================================================
+-- 审批运行表：审批实例、节点执行、审批任务和审批记录。
+-- 运行表不保存 tenant_id，也不建立指向 tenant Schema 的外键。
+-- ============================================================================
+
+-- 实例在发起时绑定确定的已发布版本，后续发布新版本不影响已经运行的实例。
+CREATE TABLE IF NOT EXISTS process.approval_instance (
+    id UUID PRIMARY KEY,
+    process_id UUID NOT NULL,
+    process_version_id UUID NOT NULL,
+    business_key VARCHAR(200) NOT NULL,
+    idempotency_key VARCHAR(200) NOT NULL,
+    request_digest VARCHAR(64),
+    title VARCHAR(200) NOT NULL,
+    applicant_person_id UUID,
+    applicant_snapshot_json JSONB NOT NULL,
+    approval_form_json JSONB NOT NULL,
+    execution_payload_json JSONB NOT NULL,
+    action_code VARCHAR(100),
+    status VARCHAR(20) NOT NULL,
+    started_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_approval_instance_process
+        FOREIGN KEY (process_id) REFERENCES process.approval_process (id),
+    CONSTRAINT fk_approval_instance_process_version
+        FOREIGN KEY (process_version_id) REFERENCES process.approval_process_version (id),
+    CONSTRAINT uq_approval_instance_idempotency_key
+        UNIQUE (idempotency_key),
+    CONSTRAINT ck_approval_instance_status
+        CHECK (status IN ('RUNNING', 'APPROVED', 'REJECTED', 'CANCELLED', 'ERROR'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_process_id
+    ON process.approval_instance (process_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_process_version_id
+    ON process.approval_instance (process_version_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_business_key
+    ON process.approval_instance (business_key);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_idempotency_key
+    ON process.approval_instance (idempotency_key);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_applicant_person_id
+    ON process.approval_instance (applicant_person_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_status
+    ON process.approval_instance (status);
+
+-- 已经建过运行表的库补上请求摘要列；全新库由上面的建表语句直接创建。
+ALTER TABLE process.approval_instance
+    ADD COLUMN IF NOT EXISTS request_digest VARCHAR(64);
+
+-- 节点执行表直接支持后台展示当前节点、节点耗时和实际选择的分支。
+CREATE TABLE IF NOT EXISTS process.approval_node_execution (
+    id UUID PRIMARY KEY,
+    instance_id UUID NOT NULL,
+    process_version_id UUID NOT NULL,
+    node_id UUID NOT NULL,
+    node_type VARCHAR(32) NOT NULL,
+    node_name VARCHAR(128) NOT NULL,
+    sequence_no INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    entered_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    completed_at TIMESTAMP WITH TIME ZONE,
+    next_node_id UUID,
+    result_json JSONB NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_approval_node_execution_instance
+        FOREIGN KEY (instance_id) REFERENCES process.approval_instance (id),
+    CONSTRAINT fk_approval_node_execution_process_version
+        FOREIGN KEY (process_version_id) REFERENCES process.approval_process_version (id),
+    CONSTRAINT fk_approval_node_execution_node
+        FOREIGN KEY (node_id) REFERENCES process.approval_process_version_node (id),
+    CONSTRAINT uq_approval_node_execution_sequence
+        UNIQUE (instance_id, sequence_no),
+    CONSTRAINT ck_approval_node_execution_sequence_positive
+        CHECK (sequence_no > 0),
+    CONSTRAINT ck_approval_node_execution_status
+        CHECK (status IN ('ACTIVE', 'COMPLETED', 'REJECTED', 'CANCELLED', 'ERROR'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_node_execution_instance_id
+    ON process.approval_node_execution (instance_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_node_execution_process_version_id
+    ON process.approval_node_execution (process_version_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_node_execution_node_id
+    ON process.approval_node_execution (node_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_node_execution_node_type
+    ON process.approval_node_execution (node_type);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_node_execution_status
+    ON process.approval_node_execution (status);
+
+-- 同一实例同时最多存在一条 ACTIVE 节点执行记录，由部分唯一索引兜住并发推进。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_process_approval_node_execution_one_active
+    ON process.approval_node_execution (instance_id)
+    WHERE status = 'ACTIVE';
+
+-- 实例指向当前活动节点的列在两张表都建好后再补，解决循环引用顺序。
+ALTER TABLE process.approval_instance
+    ADD COLUMN IF NOT EXISTS current_node_execution_id UUID
+    REFERENCES process.approval_node_execution (id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_instance_current_node_execution_id
+    ON process.approval_instance (current_node_execution_id);
+
+-- 进入人工审批节点时为全部审批人同时创建任务，节点内不存在顺序约束。
+CREATE TABLE IF NOT EXISTS process.approval_task (
+    id UUID PRIMARY KEY,
+    instance_id UUID NOT NULL,
+    node_execution_id UUID NOT NULL,
+    approver_person_id UUID NOT NULL,
+    approver_snapshot_json JSONB NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    handled_at TIMESTAMP WITH TIME ZONE,
+    cancelled_at TIMESTAMP WITH TIME ZONE,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_approval_task_instance
+        FOREIGN KEY (instance_id) REFERENCES process.approval_instance (id),
+    CONSTRAINT fk_approval_task_node_execution
+        FOREIGN KEY (node_execution_id) REFERENCES process.approval_node_execution (id),
+    CONSTRAINT uq_approval_task_approver
+        UNIQUE (node_execution_id, approver_person_id),
+    CONSTRAINT ck_approval_task_status
+        CHECK (status IN ('PENDING', 'APPROVED', 'REJECTED', 'CANCELLED'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_task_instance_id
+    ON process.approval_task (instance_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_task_node_execution_id
+    ON process.approval_task (node_execution_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_task_approver_person_id
+    ON process.approval_task (approver_person_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_task_status
+    ON process.approval_task (status);
+
+-- 审批记录不可修改，一个任务只能产生一条最终记录。
+CREATE TABLE IF NOT EXISTS process.approval_record (
+    id UUID PRIMARY KEY,
+    instance_id UUID NOT NULL,
+    node_execution_id UUID NOT NULL,
+    task_id UUID NOT NULL,
+    operator_person_id UUID NOT NULL,
+    operator_snapshot_json JSONB NOT NULL,
+    action VARCHAR(20) NOT NULL,
+    comment TEXT,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_approval_record_instance
+        FOREIGN KEY (instance_id) REFERENCES process.approval_instance (id),
+    CONSTRAINT fk_approval_record_node_execution
+        FOREIGN KEY (node_execution_id) REFERENCES process.approval_node_execution (id),
+    CONSTRAINT fk_approval_record_task
+        FOREIGN KEY (task_id) REFERENCES process.approval_task (id),
+    CONSTRAINT uq_approval_record_task
+        UNIQUE (task_id),
+    CONSTRAINT ck_approval_record_action
+        CHECK (action IN ('APPROVE', 'REJECT'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_record_instance_id
+    ON process.approval_record (instance_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_record_node_execution_id
+    ON process.approval_record (node_execution_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_record_task_id
+    ON process.approval_record (task_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_record_operator_person_id
+    ON process.approval_record (operator_person_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_approval_record_action
+    ON process.approval_record (action);
+
 -- 第一批节点能力定义使用固定 UUID，方便前端画布和联调环境稳定引用。
 -- 语句内部不允许出现分号，初始化脚本会按分号拆分后逐条执行。
 INSERT INTO process.node_definition (
@@ -502,3 +688,62 @@ COMMENT ON COLUMN process.approval_process_version_node.config_json IS '该版�
 COMMENT ON COLUMN process.approval_process_version_node.position_json IS '前端画布坐标';
 COMMENT ON COLUMN process.approval_process_version_node.created_at IS '创建时间';
 COMMENT ON COLUMN process.approval_process_version_node.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE process.approval_instance IS '一次完整审批申请及其绑定的流程版本';
+COMMENT ON COLUMN process.approval_instance.id IS '审批实例 ID';
+COMMENT ON COLUMN process.approval_instance.process_id IS '发起时的稳定流程 ID';
+COMMENT ON COLUMN process.approval_instance.process_version_id IS '本次运行使用的已发布版本 ID';
+COMMENT ON COLUMN process.approval_instance.business_key IS '业务系统中的原单据标识';
+COMMENT ON COLUMN process.approval_instance.idempotency_key IS '内部幂等键，全局唯一，重复发起返回同一实例';
+COMMENT ON COLUMN process.approval_instance.request_digest IS '发起请求内容的规范化摘要，重放时用于识别内容是否变化';
+COMMENT ON COLUMN process.approval_instance.title IS '审批单标题';
+COMMENT ON COLUMN process.approval_instance.applicant_person_id IS '发起人员 ID，不建立跨 Schema 外键';
+COMMENT ON COLUMN process.approval_instance.applicant_snapshot_json IS '发起时的人员展示信息';
+COMMENT ON COLUMN process.approval_instance.approval_form_json IS '给审批人查看的审批单数据快照';
+COMMENT ON COLUMN process.approval_instance.execution_payload_json IS '审批通过后调用业务系统使用的参数';
+COMMENT ON COLUMN process.approval_instance.action_code IS '后续业务动作标识，为空表示不触发业务执行';
+COMMENT ON COLUMN process.approval_instance.status IS '实例状态：RUNNING、APPROVED、REJECTED、CANCELLED 或 ERROR';
+COMMENT ON COLUMN process.approval_instance.current_node_execution_id IS '当前活动节点执行记录 ID，结束后置空';
+COMMENT ON COLUMN process.approval_instance.started_at IS '审批发起时间';
+COMMENT ON COLUMN process.approval_instance.finished_at IS '审批结束时间，运行中为空';
+COMMENT ON COLUMN process.approval_instance.created_at IS '创建时间';
+COMMENT ON COLUMN process.approval_instance.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE process.approval_node_execution IS '审批实例实际进入过的节点及实际执行路径';
+COMMENT ON COLUMN process.approval_node_execution.id IS '节点执行记录 ID';
+COMMENT ON COLUMN process.approval_node_execution.instance_id IS '所属审批实例 ID';
+COMMENT ON COLUMN process.approval_node_execution.process_version_id IS '对应流程版本 ID';
+COMMENT ON COLUMN process.approval_node_execution.node_id IS '版本节点 ID';
+COMMENT ON COLUMN process.approval_node_execution.node_type IS '进入节点时固化的执行类型';
+COMMENT ON COLUMN process.approval_node_execution.node_name IS '进入节点时固化的节点名称';
+COMMENT ON COLUMN process.approval_node_execution.sequence_no IS '实际执行顺序，从 1 开始';
+COMMENT ON COLUMN process.approval_node_execution.status IS '节点执行状态：ACTIVE、COMPLETED、REJECTED、CANCELLED 或 ERROR';
+COMMENT ON COLUMN process.approval_node_execution.entered_at IS '进入节点时间';
+COMMENT ON COLUMN process.approval_node_execution.completed_at IS '离开节点时间，活动节点为空';
+COMMENT ON COLUMN process.approval_node_execution.next_node_id IS '实际选择的后续节点 ID';
+COMMENT ON COLUMN process.approval_node_execution.result_json IS '节点结果和条件命中信息等扩展数据';
+COMMENT ON COLUMN process.approval_node_execution.created_at IS '创建时间';
+COMMENT ON COLUMN process.approval_node_execution.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE process.approval_task IS '人工审批节点为每位审批人创建的待办任务';
+COMMENT ON COLUMN process.approval_task.id IS '审批任务 ID';
+COMMENT ON COLUMN process.approval_task.instance_id IS '所属审批实例 ID';
+COMMENT ON COLUMN process.approval_task.node_execution_id IS '所属节点执行记录 ID';
+COMMENT ON COLUMN process.approval_task.approver_person_id IS '审批人 ID，不建立跨 Schema 外键';
+COMMENT ON COLUMN process.approval_task.approver_snapshot_json IS '审批人当时的姓名等展示信息';
+COMMENT ON COLUMN process.approval_task.status IS '任务状态：PENDING、APPROVED、REJECTED 或 CANCELLED';
+COMMENT ON COLUMN process.approval_task.created_at IS '待办产生时间';
+COMMENT ON COLUMN process.approval_task.handled_at IS '审批完成时间';
+COMMENT ON COLUMN process.approval_task.cancelled_at IS '被系统取消时间';
+COMMENT ON COLUMN process.approval_task.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE process.approval_record IS '审批人的实际操作，不可修改的审计记录';
+COMMENT ON COLUMN process.approval_record.id IS '审批记录 ID';
+COMMENT ON COLUMN process.approval_record.instance_id IS '所属审批实例 ID';
+COMMENT ON COLUMN process.approval_record.node_execution_id IS '所属节点执行记录 ID';
+COMMENT ON COLUMN process.approval_record.task_id IS '对应审批任务 ID，一个任务只允许一条记录';
+COMMENT ON COLUMN process.approval_record.operator_person_id IS '实际操作人员 ID';
+COMMENT ON COLUMN process.approval_record.operator_snapshot_json IS '操作人员展示信息';
+COMMENT ON COLUMN process.approval_record.action IS '操作动作：APPROVE 或 REJECT';
+COMMENT ON COLUMN process.approval_record.comment IS '审批意见';
+COMMENT ON COLUMN process.approval_record.created_at IS '操作时间';

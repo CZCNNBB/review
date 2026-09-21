@@ -1,5 +1,11 @@
-"""审批流定义模块数据库模型。"""
+"""审批流定义与运行模块数据库模型。"""
 
+from app.server.process.src.models.approval_model import (
+    ApprovalInstance,
+    ApprovalNodeExecution,
+    ApprovalRecord,
+    ApprovalTask,
+)
 from app.server.process.src.models.process_model import (
     ApprovalProcess,
     ApprovalProcessVersion,
@@ -12,4 +18,8 @@ __all__ = [
     "ApprovalProcess",
     "ApprovalProcessVersion",
     "ApprovalProcessVersionNode",
+    "ApprovalInstance",
+    "ApprovalNodeExecution",
+    "ApprovalTask",
+    "ApprovalRecord",
 ]

@@ -20,6 +20,7 @@ from app.server.process.src.schemas.process_schema import (
     ProcessVersionResponse,
 )
 from app.server.process.src.service.exceptions import (
+    ApprovalPermissionError,
     ProcessConflictError,
     ProcessNotFoundError,
     ProcessStateError,
@@ -41,6 +42,8 @@ def raise_process_http_error(exc: Exception) -> None:
 
     if isinstance(exc, ProcessNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    if isinstance(exc, ApprovalPermissionError):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     if isinstance(exc, (ProcessConflictError, ProcessStateError)):
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if isinstance(exc, ProcessValidationError):

@@ -214,9 +214,17 @@ GET  /api/admin/process-versions/{version_id}/graph
 PUT  /api/admin/process-versions/{version_id}/graph
 POST /api/admin/process-versions/{version_id}/validate
 POST /api/admin/process-versions/{version_id}/publish
+POST /api/processes/{process_id}/instances
+GET  /api/approval-instances/{instance_id}
+GET  /api/approval-instances/{instance_id}/timeline
+GET  /api/approval-tasks
+POST /api/approval-tasks/{task_id}/approve
+POST /api/approval-tasks/{task_id}/reject
 ```
 
 `/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
+
+审批运行接口暂未接入认证：接入项目平台登录身份前，任务查询和审批请求显式传递 `person_id`，发起审批在请求体中传递 `applicant_person_id`。租户流程授权落地后，发起审批会改为通过 `X-API-Key` 确定租户身份并校验流程绑定。
 
 ## 后续模块规划
 
