@@ -32,6 +32,7 @@ class OrganizationApiTestCase(unittest.TestCase):
                 "schema_translate_map": {
                     "tenant": None,
                     "organization": None,
+                    "process": None,
                 }
             },
         )

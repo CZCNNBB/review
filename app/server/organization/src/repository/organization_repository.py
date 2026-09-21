@@ -39,6 +39,22 @@ class OrganizationRepository:
         statement = statement.offset(offset).limit(limit)
         return list(db.exec(statement).all())
 
+    def list_persons_by_ids(
+        self,
+        person_ids: list[UUID],
+        db: Session,
+    ) -> list[Person]:
+        """批量按主键查询人员，供其它模块校验人员引用时一次性取回。
+
+        这里不做租户作用域过滤：人员是否可用由调用方按业务规则判断。
+        """
+
+        if not person_ids:
+            return []
+
+        statement = select(Person).where(Person.id.in_(person_ids))
+        return list(db.exec(statement).all())
+
     def get_department(self, department_id: UUID, db: Session) -> Department | None:
         """按主键查询全局部门。"""
 

@@ -11,6 +11,9 @@ sqlmodel==0.0.27
 SQLAlchemy==2.0.44
 psycopg2-binary==2.9.11
 
+# 节点配置和审批表单的结构校验
+jsonschema==4.24.0
+
 # Tenant callback credential encryption
 cryptography==49.0.0
 

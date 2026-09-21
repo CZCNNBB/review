@@ -49,7 +49,10 @@ downloads/
 storage/
 temp/
 tmp/
-data/
+# data/ 下的运行时产物不进版本库，但统一初始化 SQL 是数据库结构的唯一来源，
+# 必须进版本库。这里用 data/* 而不是 data/，否则被排除的目录内的文件无法重新放行。
+data/*
+!data/init.sql
 *.db
 *.sqlite
 *.sqlite3

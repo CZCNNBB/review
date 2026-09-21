@@ -78,6 +78,13 @@ class OrganizationService:
             raise OrganizationNotFoundError("人员不存在")
         return person
 
+    def list_persons_by_ids(self, person_ids: list[UUID], db: Session) -> list[Person]:
+        """批量查询人员，供其它模块校验人员引用。"""
+
+        if not person_ids:
+            return []
+        return self.repository.list_persons_by_ids(person_ids, db)
+
     def update_person(
         self,
         person_id: UUID,
