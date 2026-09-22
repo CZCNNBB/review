@@ -82,7 +82,7 @@ class TenantRepository:
         tenant_id: UUID,
         db: Session,
     ) -> list[TenantCallbackCredential]:
-        """查询租户的全部回调签名凭据元数据。"""
+        """查询租户的全部回调凭据元数据。"""
 
         statement = (
             select(TenantCallbackCredential)
@@ -90,6 +90,27 @@ class TenantRepository:
             .order_by(TenantCallbackCredential.created_at.desc())
         )
         return list(db.exec(statement).all())
+
+    def get_active_callback_credential(
+        self,
+        tenant_id: UUID,
+        db: Session,
+    ) -> TenantCallbackCredential | None:
+        """查询租户当前唯一有效的回调凭据。
+
+        数据库的部分唯一索引保证同一租户最多只有一条 ACTIVE 记录，这里的查询顺序仅
+        用于数据被手工修改后仍能稳定返回最新一条。
+        """
+
+        statement = (
+            select(TenantCallbackCredential)
+            .where(
+                TenantCallbackCredential.tenant_id == tenant_id,
+                TenantCallbackCredential.status == "ACTIVE",
+            )
+            .order_by(TenantCallbackCredential.created_at.desc())
+        )
+        return db.exec(statement).first()
 
     def get_person_binding(
         self,

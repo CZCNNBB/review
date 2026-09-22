@@ -58,3 +58,7 @@ class ApprovalConflictError(ProcessConflictError):
 
 class ApprovalPermissionError(ProcessServiceError):
     """当前操作人不是该审批任务的处理人。"""
+
+
+class ExecutionRecordNotFoundError(ProcessNotFoundError):
+    """指定业务执行记录不存在。"""

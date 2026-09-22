@@ -12,20 +12,41 @@ if __package__ in {None, ""}:
 
 import app.bootstrap  # 初始化异步环境，必须在其他项目模块之前导入
 
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.server.integration.api import router as integration_router
 from app.server.organization.api import router as organization_router
 from app.server.process.api import router as process_router
+from app.server.process.src.execution.bootstrap import (
+    start_business_execution_worker,
+    stop_business_execution_worker,
+)
 from app.server.tenant.api import router as tenant_router
 import uvicorn
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """应用启动时启动业务执行 Worker，关闭时有序停止。
+
+    Worker 在独立线程中轮询，不占用当前事件循环。多个 Uvicorn 进程各自启动一个
+    Worker，重复领取由 PostgreSQL 的 FOR UPDATE SKIP LOCKED 兜住。
+    """
+
+    worker = start_business_execution_worker()
+    try:
+        yield
+    finally:
+        stop_business_execution_worker(worker)
 
 
 def create_app() -> FastAPI:
     """
     创建FastAPI实例
     """
-    app = FastAPI()
+    app = FastAPI(lifespan=lifespan)
     
     # 配置 CORS 中间件，允许所有来源访问
     app.add_middleware(

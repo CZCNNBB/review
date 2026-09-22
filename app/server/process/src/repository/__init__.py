@@ -1,6 +1,9 @@
 """审批流定义与运行模块数据访问层。"""
 
 from app.server.process.src.repository.approval_repository import ApprovalRepository
+from app.server.process.src.repository.execution_repository import (
+    BusinessExecutionRepository,
+)
 from app.server.process.src.repository.node_definition_repository import (
     NodeDefinitionRepository,
 )
@@ -8,6 +11,7 @@ from app.server.process.src.repository.process_repository import ProcessReposito
 
 __all__ = [
     "ApprovalRepository",
+    "BusinessExecutionRepository",
     "NodeDefinitionRepository",
     "ProcessRepository",
 ]

@@ -4,7 +4,8 @@
 404、409 和 422 四类错误响应。流程定义通过 Service 准备，接口测试只关注运行层。
 
 本文件固定使用全局模式：审批运行接口本身不依赖租户能力，发起审批也不需要 API Key
-和流程授权，只校验流程、表单、业务动作和执行参数。租户模式下的完整链路由
+和流程授权，只校验流程和表单。全局模式没有租户归属，因此不支持 `action_code`，
+本文件的申请都是纯审批；租户模式下的完整链路和业务执行参数校验由
 `test_business_access_api.py` 覆盖。
 """
 
@@ -19,12 +20,6 @@ from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
 from app.main import create_app
-from app.server.integration.src.schemas.business_action_schema import (
-    BusinessActionCreateRequest,
-)
-from app.server.integration.src.service.business_action_service import (
-    BusinessActionService,
-)
 from app.server.organization.src.schemas.organization_schema import PersonCreateRequest
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.process.src.constants import (
@@ -49,10 +44,6 @@ from tests.process_test_helpers import (
 )
 
 
-# 全局模式下的业务动作标识，发起审批时用它验证执行参数链路。
-PAYMENT_ACTION_CODE = "PAYMENT_EXECUTE"
-
-
 class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
     """验证审批运行接口的完整链路和错误响应。"""
 
@@ -70,7 +61,6 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.applicant_id = self.create_person("接口发起人")
         self.approver_a = self.create_person("接口审批人A")
         self.approver_b = self.create_person("接口审批人B")
-        self.create_payment_action()
 
         app = create_app()
 
@@ -105,25 +95,6 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             self.db,
         )
         return self.track_person(person.id)
-
-    def create_payment_action(self) -> UUID:
-        """创建发起审批时使用的业务动作并登记清理。"""
-
-        action = BusinessActionService().create_action(
-            BusinessActionCreateRequest(
-                action_code=PAYMENT_ACTION_CODE,
-                name="执行付款",
-                relative_path="/payments/execute",
-                request_schema_json={
-                    "type": "object",
-                    "required": ["payment_id"],
-                    "properties": {"payment_id": {"type": "string", "minLength": 1}},
-                    "additionalProperties": False,
-                },
-            ),
-            self.db,
-        )
-        return self.track_business_action(action.id)
 
     def publish_linear_process(
         self,
@@ -209,9 +180,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 "business_key": business_key or f"BIZ-{uuid4().hex[:8]}",
                 "title": "供应商付款申请",
                 "applicant_person_id": str(self.applicant_id),
-                "action_code": PAYMENT_ACTION_CODE,
                 "approval_form": approval_form or {},
-                "execution_payload": {"payment_id": "PAY-001"},
             },
         )
         self.assertEqual(response.status_code, 201, response.text)
@@ -261,7 +230,8 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         detail = detail_response.json()["data"]
         self.assertEqual(detail["business_key"], "BIZ-API-001")
         self.assertEqual(detail["title"], "供应商付款申请")
-        self.assertEqual(detail["action_code"], PAYMENT_ACTION_CODE)
+        # 全局模式下没有业务执行，实例不保存业务动作标识。
+        self.assertIsNone(detail["action_code"])
         self.assertEqual(detail["current_node"]["node_name"], "财务审批")
         self.assertEqual(
             [execution["node_type"] for execution in detail["node_executions"]],
@@ -322,9 +292,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 "business_key": business_key,
                 "title": "供应商付款申请",
                 "applicant_person_id": str(self.applicant_id),
-                "action_code": PAYMENT_ACTION_CODE,
                 "approval_form": {"amount": 999},
-                "execution_payload": {"payment_id": "PAY-001"},
             },
         )
 

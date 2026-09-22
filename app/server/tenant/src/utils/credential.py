@@ -1,7 +1,8 @@
-"""API Key 生成和回调密钥加密工具。"""
+"""API Key 生成、Service Token 加密和凭据过期判断工具。"""
 
 import os
 import secrets
+from datetime import datetime, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -17,16 +18,32 @@ def generate_api_key() -> str:
     return f"{API_KEY_PREFIX}_{key_prefix}.{secret}"
 
 
-def generate_callback_secret() -> tuple[str, str]:
-    """生成回调签名使用的 key_id 和高熵共享密钥。"""
+def utc_now() -> datetime:
+    """返回带 UTC 时区的当前时间。"""
 
-    key_id = f"callback_{secrets.token_hex(6)}"
-    secret = f"cbsec_{secrets.token_urlsafe(32)}"
-    return key_id, secret
+    return datetime.now(timezone.utc)
 
 
-class CallbackSecretCipher:
-    """使用应用主密钥加密和解密回调签名密钥。"""
+def is_expired(expires_at: datetime | None) -> bool:
+    """兼容数据库可能返回的无时区时间并判断凭据是否过期。
+
+    没有设置过期时间的凭据永远有效。
+    """
+
+    if expires_at is None:
+        return False
+
+    normalized_expiration = expires_at
+    if normalized_expiration.tzinfo is None:
+        normalized_expiration = normalized_expiration.replace(tzinfo=timezone.utc)
+    return normalized_expiration <= utc_now()
+
+
+class CredentialCipher:
+    """使用应用主密钥加密和解密业务系统提供的 Service Token。
+
+    回调时审批中心需要把 Token 原样发回业务系统，因此只能加密保存，不能只保存哈希。
+    """
 
     def __init__(self, master_key: str):
         """初始化密钥加密器并校验主密钥格式。"""
@@ -38,7 +55,7 @@ class CallbackSecretCipher:
             raise ValueError("APPROVAL_CREDENTIAL_MASTER_KEY 格式无效") from exc
 
     @classmethod
-    def from_environment(cls) -> "CallbackSecretCipher":
+    def from_environment(cls) -> "CredentialCipher":
         """从环境变量创建加密器，未配置时给出明确错误。"""
 
         master_key = os.getenv("APPROVAL_CREDENTIAL_MASTER_KEY")
@@ -53,14 +70,14 @@ class CallbackSecretCipher:
         return Fernet.generate_key().decode("utf-8")
 
     def encrypt(self, plaintext: str) -> str:
-        """加密回调签名密钥。"""
+        """加密业务系统提供的 Service Token。"""
 
         return self._fernet.encrypt(plaintext.encode("utf-8")).decode("utf-8")
 
     def decrypt(self, ciphertext: str) -> str:
-        """解密回调签名密钥，密文无效时抛出明确错误。"""
+        """解密 Service Token，密文无效时抛出明确错误。"""
 
         try:
             return self._fernet.decrypt(ciphertext.encode("utf-8")).decode("utf-8")
         except InvalidToken as exc:
-            raise ValueError("回调签名密钥无法解密") from exc
+            raise ValueError("Service Token 无法解密") from exc

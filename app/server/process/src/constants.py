@@ -232,3 +232,45 @@ RULE_APPLICANT_INVALID = "APPLICANT_INVALID"
 
 # 当前节点在选择后续路径时找不到任何可走的连线，属于编排数据损坏。
 RULE_ENGINE_PATH_NOT_FOUND = "ENGINE_PATH_NOT_FOUND"
+
+# ---------------------------------------------------------------------------
+# 业务执行
+# ---------------------------------------------------------------------------
+
+# 业务执行状态。第一版没有多次重试，因此一条记录既表示待执行任务，也表示唯一一次调用结果。
+EXECUTION_STATUS_PENDING = "PENDING"
+EXECUTION_STATUS_RUNNING = "RUNNING"
+EXECUTION_STATUS_SUCCEEDED = "SUCCEEDED"
+EXECUTION_STATUS_FAILED = "FAILED"
+
+EXECUTION_STATUSES = (
+    EXECUTION_STATUS_PENDING,
+    EXECUTION_STATUS_RUNNING,
+    EXECUTION_STATUS_SUCCEEDED,
+    EXECUTION_STATUS_FAILED,
+)
+
+# 只有 PENDING 记录会被后台执行器领取，其余状态都是终态。
+EXECUTION_STATUS_PATTERN = r"^(PENDING|RUNNING|SUCCEEDED|FAILED)$"
+
+# 执行记录保存的字段长度上限。业务系统可能返回很大的正文，落库前必须截断，
+# 避免数据库膨胀、日志污染和管理页面加载缓慢。
+# 响应正文按 UTF-8 字节数限制，错误摘要按字符数限制（与 error_message 列长度一致）。
+MAX_RESPONSE_BODY_BYTES = 8192
+MAX_ERROR_MESSAGE_LENGTH = 1000
+MAX_REQUEST_URL_LENGTH = 1000
+
+# 执行器写入的失败摘要。租户维度的失败原因由 tenant 模块提供的回调配置实现给出，
+# 这里只保留业务动作快照本身缺失时的提示。
+EXECUTION_ERROR_ACTION_MISSING = "业务动作配置缺失，无法确定调用方式"
+
+# 后台 Worker 的环境变量名。轮询频率和领取数量不能写死在代码里。
+ENV_WORKER_ENABLED = "BUSINESS_EXECUTION_WORKER_ENABLED"
+ENV_POLL_INTERVAL_SECONDS = "BUSINESS_EXECUTION_POLL_INTERVAL_SECONDS"
+ENV_BATCH_SIZE = "BUSINESS_EXECUTION_BATCH_SIZE"
+ENV_CONCURRENCY = "BUSINESS_EXECUTION_CONCURRENCY"
+
+DEFAULT_WORKER_ENABLED = True
+DEFAULT_POLL_INTERVAL_SECONDS = 2.0
+DEFAULT_BATCH_SIZE = 10
+DEFAULT_CONCURRENCY = 5

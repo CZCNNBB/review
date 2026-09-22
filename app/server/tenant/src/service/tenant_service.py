@@ -1,6 +1,6 @@
 """租户注册、凭据管理和 API Key 认证业务逻辑。"""
 
-from datetime import datetime, timezone
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -21,20 +21,15 @@ from app.server.tenant.src.service.exceptions import (
     TenantNotFoundError,
 )
 from app.server.tenant.src.utils.credential import (
-    CallbackSecretCipher,
+    CredentialCipher,
     generate_api_key,
-    generate_callback_secret,
+    is_expired,
+    utc_now,
 )
 
 
-def utc_now() -> datetime:
-    """返回带 UTC 时区的当前时间。"""
-
-    return datetime.now(timezone.utc)
-
-
 class TenantService:
-    """提供租户、API Key 和回调签名凭据的业务能力。"""
+    """提供租户、API Key 和回调 Service Token 凭据的业务能力。"""
 
     def __init__(self, repository: TenantRepository | None = None):
         """初始化租户服务并允许测试注入 Repository。"""
@@ -147,7 +142,7 @@ class TenantService:
             raise InvalidApiKeyError("API Key 无效")
         if api_key.status != "ACTIVE":
             raise InvalidApiKeyError("API Key 已停用或撤销")
-        if api_key.expires_at and self._is_expired(api_key.expires_at):
+        if is_expired(api_key.expires_at):
             raise InvalidApiKeyError("API Key 已过期")
 
         tenant = self.get_tenant(api_key.tenant_id, db)
@@ -165,37 +160,55 @@ class TenantService:
         self,
         tenant_id: UUID,
         name: str,
+        token: str,
+        header_name: str,
+        token_prefix: str,
         expires_at: datetime | None,
         db: Session,
-    ) -> tuple[TenantCallbackCredential, str]:
-        """创建回调 HMAC 凭据并加密保存密钥。"""
+    ) -> TenantCallbackCredential:
+        """保存业务系统签发的 Service Token，并替换租户原有的有效凭据。
+
+        一个租户同一时间只允许存在一个 ACTIVE 凭据，因此撤销旧凭据和写入新凭据必须在
+        同一个事务中完成，避免出现两个有效凭据或没有可用凭据的中间状态。Token 只以
+        密文落库，返回值里不含明文。
+        """
 
         self.get_tenant(tenant_id, db)
-        key_id, secret = generate_callback_secret()
         try:
-            cipher = CallbackSecretCipher.from_environment()
-            secret_ciphertext = cipher.encrypt(secret)
+            cipher = CredentialCipher.from_environment()
+            token_ciphertext = cipher.encrypt(token)
         except ValueError as exc:
             raise CredentialConfigurationError(str(exc)) from exc
+
+        now = utc_now()
+        existing_credential = self.repository.get_active_callback_credential(
+            tenant_id,
+            db,
+        )
+        if existing_credential is not None:
+            existing_credential.status = "REVOKED"
+            existing_credential.revoked_at = now
+            db.add(existing_credential)
 
         credential = TenantCallbackCredential(
             tenant_id=tenant_id,
             name=name.strip(),
-            key_id=key_id,
-            secret_ciphertext=secret_ciphertext,
+            header_name=header_name,
+            token_prefix=token_prefix,
+            token_ciphertext=token_ciphertext,
             expires_at=expires_at,
         )
         self.repository.add_callback_credential(credential, db)
-        self._commit_or_conflict(db, "回调凭据 Key ID 冲突，请重试")
+        self._commit_or_conflict(db, "回调凭据写入冲突，请重试")
         db.refresh(credential)
-        return credential, secret
+        return credential
 
     def list_callback_credentials(
         self,
         tenant_id: UUID,
         db: Session,
     ) -> list[TenantCallbackCredential]:
-        """查询租户回调签名凭据元数据。"""
+        """查询租户回调 Service Token 凭据元数据。"""
 
         self.get_tenant(tenant_id, db)
         return self.repository.list_callback_credentials(tenant_id, db)
@@ -206,11 +219,11 @@ class TenantService:
         credential_id: UUID,
         db: Session,
     ) -> TenantCallbackCredential:
-        """撤销回调签名凭据。"""
+        """撤销回调 Service Token 凭据，撤销后不能恢复。"""
 
         credential = self.repository.get_callback_credential_by_id(credential_id, db)
         if not credential or credential.tenant_id != tenant_id:
-            raise CredentialNotFoundError("回调签名凭据不存在")
+            raise CredentialNotFoundError("回调凭据不存在")
         if credential.status != "REVOKED":
             credential.status = "REVOKED"
             credential.revoked_at = utc_now()
@@ -218,15 +231,6 @@ class TenantService:
             db.commit()
             db.refresh(credential)
         return credential
-
-    @staticmethod
-    def _is_expired(expires_at: datetime) -> bool:
-        """兼容数据库可能返回的无时区时间并判断是否过期。"""
-
-        normalized_expiration = expires_at
-        if normalized_expiration.tzinfo is None:
-            normalized_expiration = normalized_expiration.replace(tzinfo=timezone.utc)
-        return normalized_expiration <= utc_now()
 
     @staticmethod
     def _commit_or_conflict(db: Session, message: str) -> None:

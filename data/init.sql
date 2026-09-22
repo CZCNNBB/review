@@ -44,29 +44,42 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_tenant_tenant_api_key_api_key
 CREATE INDEX IF NOT EXISTS ix_tenant_tenant_api_key_status
     ON tenant.tenant_api_key (status);
 
+-- 回调认证方案为 Service Token：业务系统为自己现有的认证机制创建一个服务账号，为
+-- 审批中心签发长期 Token。审批中心复用业务系统已有的认证请求头，不要求业务系统新增
+-- 审批中心专用的认证协议。回调时 Token 必须能够原样还原，因此保存应用主密钥加密后的
+-- 密文，不能只保存哈希。
+--
+-- 早期 HMAC 凭据结构到本结构的升级脚本见
+-- data/migrations/20260922_callback_credential_service_token.sql，已有开发库需要先执行该脚本。
 CREATE TABLE IF NOT EXISTS tenant.tenant_callback_credential (
     id UUID PRIMARY KEY,
     tenant_id UUID NOT NULL,
     name VARCHAR(100) NOT NULL,
-    key_id VARCHAR(64) NOT NULL,
-    secret_ciphertext TEXT NOT NULL,
+    header_name VARCHAR(100) NOT NULL,
+    token_prefix VARCHAR(50) NOT NULL,
+    token_ciphertext TEXT NOT NULL,
     status VARCHAR(20) NOT NULL,
     expires_at TIMESTAMP WITH TIME ZONE,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL,
     revoked_at TIMESTAMP WITH TIME ZONE,
     created_by UUID,
     CONSTRAINT fk_tenant_callback_credential_tenant
-        FOREIGN KEY (tenant_id) REFERENCES tenant.tenant (id)
+        FOREIGN KEY (tenant_id) REFERENCES tenant.tenant (id),
+    CONSTRAINT ck_tenant_callback_credential_status
+        CHECK (status IN ('ACTIVE', 'REVOKED'))
 );
 
 CREATE INDEX IF NOT EXISTS ix_tenant_tenant_callback_credential_tenant_id
     ON tenant.tenant_callback_credential (tenant_id);
 
-CREATE UNIQUE INDEX IF NOT EXISTS ix_tenant_tenant_callback_credential_key_id
-    ON tenant.tenant_callback_credential (key_id);
-
 CREATE INDEX IF NOT EXISTS ix_tenant_tenant_callback_credential_status
     ON tenant.tenant_callback_credential (status);
+
+-- 一个租户同一时间只允许存在一个 ACTIVE 回调凭据。更换 Token 时必须在同一个事务中
+-- 撤销旧凭据并写入新凭据，避免出现两个有效凭据或没有可用凭据的中间状态。
+CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_callback_credential_one_active
+    ON tenant.tenant_callback_credential (tenant_id)
+    WHERE status = 'ACTIVE';
 
 -- ============================================================================
 -- 租户业务接入绑定表：流程授权、业务动作授权和审批使用记录。
@@ -550,6 +563,57 @@ CREATE INDEX IF NOT EXISTS ix_process_approval_record_action
     ON process.approval_record (action);
 
 -- ============================================================================
+-- 业务执行表：审批最终通过后的唯一一次业务系统调用及其结果。
+-- 一条记录既表示待执行任务，也保存调用结果。第一版没有重试，因此不拆分任务表和尝试表。
+-- 本表不保存 tenant_id，也不建立指向 tenant Schema 的外键：执行器通过 approval_instance_id
+-- 和租户使用记录确定租户，关闭租户能力后审批运行模块仍然可以独立工作。
+-- ============================================================================
+
+-- approval_instance_id 唯一，同一个审批实例最多产生一条执行记录。
+CREATE TABLE IF NOT EXISTS process.business_execution_record (
+    id UUID PRIMARY KEY,
+    approval_instance_id UUID NOT NULL,
+    business_action_id UUID,
+    action_code VARCHAR(100) NOT NULL,
+    request_url VARCHAR(1000),
+    http_method VARCHAR(10),
+    relative_path VARCHAR(500),
+    success_status_codes_json JSONB,
+    timeout_ms INTEGER,
+    request_payload_json JSONB NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    http_status_code INTEGER,
+    response_body TEXT,
+    error_message VARCHAR(1000),
+    started_at TIMESTAMP WITH TIME ZONE,
+    finished_at TIMESTAMP WITH TIME ZONE,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_business_execution_record_instance
+        FOREIGN KEY (approval_instance_id) REFERENCES process.approval_instance (id),
+    CONSTRAINT uq_business_execution_record_instance
+        UNIQUE (approval_instance_id),
+    CONSTRAINT ck_business_execution_record_status
+        CHECK (status IN ('PENDING', 'RUNNING', 'SUCCEEDED', 'FAILED'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_process_business_execution_record_instance_id
+    ON process.business_execution_record (approval_instance_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_business_execution_record_action_id
+    ON process.business_execution_record (business_action_id);
+
+CREATE INDEX IF NOT EXISTS ix_process_business_execution_record_action_code
+    ON process.business_execution_record (action_code);
+
+-- 后台轮询只查询 PENDING 记录，状态索引直接支撑 Worker 的领取语句。
+CREATE INDEX IF NOT EXISTS ix_process_business_execution_record_status
+    ON process.business_execution_record (status);
+
+CREATE INDEX IF NOT EXISTS ix_process_business_execution_record_created_at
+    ON process.business_execution_record (created_at);
+
+-- ============================================================================
 -- 业务接入表：审批通过后可以执行的一类业务动作及其参数规则。
 -- 业务动作不保存 tenant_id，租户能否使用某个动作由 tenant.business_action_binding 决定。
 -- 本模块只定义动作和校验参数，不执行任何外部 HTTP 请求。
@@ -738,13 +802,14 @@ COMMENT ON COLUMN tenant.tenant_api_key.created_at IS '创建时间';
 COMMENT ON COLUMN tenant.tenant_api_key.revoked_at IS '撤销时间';
 COMMENT ON COLUMN tenant.tenant_api_key.created_by IS '创建操作人 ID，初期允许为空';
 
-COMMENT ON TABLE tenant.tenant_callback_credential IS '审批中心回调业务系统时使用的签名凭据';
+COMMENT ON TABLE tenant.tenant_callback_credential IS '审批中心回调业务系统时使用的 Service Token 凭据';
 COMMENT ON COLUMN tenant.tenant_callback_credential.id IS '回调凭据主键 ID';
 COMMENT ON COLUMN tenant.tenant_callback_credential.tenant_id IS '所属租户 ID';
 COMMENT ON COLUMN tenant.tenant_callback_credential.name IS '回调凭据用途名称';
-COMMENT ON COLUMN tenant.tenant_callback_credential.key_id IS '对外标识回调凭据的 Key ID';
-COMMENT ON COLUMN tenant.tenant_callback_credential.secret_ciphertext IS '使用应用主密钥加密后的回调签名密钥';
-COMMENT ON COLUMN tenant.tenant_callback_credential.status IS '回调凭据状态：ENABLED 或 REVOKED';
+COMMENT ON COLUMN tenant.tenant_callback_credential.header_name IS '业务系统现有的认证请求头名称，默认为 Authorization';
+COMMENT ON COLUMN tenant.tenant_callback_credential.token_prefix IS 'Token 前缀，例如 Bearer；允许为空表示直接发送 Token 明文';
+COMMENT ON COLUMN tenant.tenant_callback_credential.token_ciphertext IS '使用应用主密钥加密后的 Service Token，回调时解密还原';
+COMMENT ON COLUMN tenant.tenant_callback_credential.status IS '回调凭据状态：ACTIVE 或 REVOKED，一个租户最多一条 ACTIVE 记录';
 COMMENT ON COLUMN tenant.tenant_callback_credential.expires_at IS '过期时间，为空表示长期有效';
 COMMENT ON COLUMN tenant.tenant_callback_credential.created_at IS '创建时间';
 COMMENT ON COLUMN tenant.tenant_callback_credential.revoked_at IS '撤销时间';
@@ -917,6 +982,26 @@ COMMENT ON COLUMN process.approval_record.operator_snapshot_json IS '操作人�
 COMMENT ON COLUMN process.approval_record.action IS '操作动作：APPROVE 或 REJECT';
 COMMENT ON COLUMN process.approval_record.comment IS '审批意见';
 COMMENT ON COLUMN process.approval_record.created_at IS '操作时间';
+
+COMMENT ON TABLE process.business_execution_record IS '审批最终通过后的唯一一次业务系统调用及其结果，同时表示待执行任务';
+COMMENT ON COLUMN process.business_execution_record.id IS '执行记录 ID，同时作为稳定的执行标识';
+COMMENT ON COLUMN process.business_execution_record.approval_instance_id IS '审批实例 ID，全局唯一，同一个实例最多一条执行记录';
+COMMENT ON COLUMN process.business_execution_record.business_action_id IS '实际使用的 integration.business_action ID 快照，不建立跨 Schema 外键';
+COMMENT ON COLUMN process.business_execution_record.action_code IS '业务动作标识快照';
+COMMENT ON COLUMN process.business_execution_record.request_url IS '实际请求地址快照，由租户回调基础地址和相对路径拼接，取得租户配置后补齐';
+COMMENT ON COLUMN process.business_execution_record.http_method IS '实际 HTTP 方法快照，业务动作配置缺失时为空';
+COMMENT ON COLUMN process.business_execution_record.relative_path IS '业务动作相对路径快照，业务动作配置缺失时为空';
+COMMENT ON COLUMN process.business_execution_record.success_status_codes_json IS '成功状态码规则快照，空数组表示全部 2xx 视为成功';
+COMMENT ON COLUMN process.business_execution_record.timeout_ms IS '单次调用超时时间快照，单位为毫秒';
+COMMENT ON COLUMN process.business_execution_record.request_payload_json IS '实际发送参数快照，取自审批实例的 execution_payload_json';
+COMMENT ON COLUMN process.business_execution_record.status IS '执行状态：PENDING、RUNNING、SUCCEEDED 或 FAILED';
+COMMENT ON COLUMN process.business_execution_record.http_status_code IS 'HTTP 响应状态码，未取得响应时为空';
+COMMENT ON COLUMN process.business_execution_record.response_body IS '响应内容，保存时按固定上限截断，不包含认证请求头';
+COMMENT ON COLUMN process.business_execution_record.error_message IS '网络异常、超时或配置错误摘要，不包含 Service Token';
+COMMENT ON COLUMN process.business_execution_record.started_at IS '实际调用开始时间，耗时通过它与结束时间相减计算';
+COMMENT ON COLUMN process.business_execution_record.finished_at IS '实际调用结束时间';
+COMMENT ON COLUMN process.business_execution_record.created_at IS '创建时间';
+COMMENT ON COLUMN process.business_execution_record.updated_at IS '最后更新时间';
 
 COMMENT ON TABLE integration.business_action IS '审批通过后可以执行的一类业务动作及其参数规则';
 COMMENT ON COLUMN integration.business_action.id IS '业务动作主键 ID';

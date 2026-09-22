@@ -208,6 +208,125 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertIn("ck_business_action_relative_path", self.sql_content)
         self.assertIn("relative_path NOT LIKE '%://%'", self.sql_content)
 
+    def test_business_execution_table_is_declared(self) -> None:
+        """业务执行表和它自己的字段都带注释，结构由数据库约束兜底。"""
+
+        self.assertIn(
+            "CREATE TABLE IF NOT EXISTS process.business_execution_record",
+            self.sql_content,
+        )
+
+        table_start = self.sql_content.index(
+            "CREATE TABLE IF NOT EXISTS process.business_execution_record"
+        )
+        table_end = self.sql_content.index(";", table_start)
+        table_definition = self.sql_content[table_start:table_end]
+
+        # 同一个审批实例最多产生一条执行记录，唯一约束是防止重复执行的最终保障。
+        self.assertIn("uq_business_execution_record_instance", table_definition)
+        self.assertIn("UNIQUE (approval_instance_id)", table_definition)
+        self.assertIn("ck_business_execution_record_status", table_definition)
+        for status_value in ("PENDING", "RUNNING", "SUCCEEDED", "FAILED"):
+            self.assertIn(f"'{status_value}'", table_definition)
+
+        # 跨 Schema 的业务动作 ID 不建立外键，但审批实例同属 process Schema，可以建立外键。
+        self.assertIn("REFERENCES process.approval_instance (id)", table_definition)
+        self.assertNotIn("REFERENCES integration.", table_definition)
+        self.assertNotIn("tenant_id", table_definition)
+
+        self.assertIn(
+            "COMMENT ON TABLE process.business_execution_record IS",
+            self.sql_content,
+        )
+        for column_name in (
+            "id",
+            "approval_instance_id",
+            "business_action_id",
+            "action_code",
+            "request_url",
+            "http_method",
+            "relative_path",
+            "success_status_codes_json",
+            "timeout_ms",
+            "request_payload_json",
+            "status",
+            "http_status_code",
+            "response_body",
+            "error_message",
+            "started_at",
+            "finished_at",
+            "created_at",
+            "updated_at",
+        ):
+            self.assertIn(
+                f"COMMENT ON COLUMN process.business_execution_record.{column_name} IS",
+                self.sql_content,
+            )
+
+    def test_execution_table_does_not_store_duration(self) -> None:
+        """耗时由时间字段相减得到，不重复保存 duration_ms。"""
+
+        table_start = self.sql_content.index(
+            "CREATE TABLE IF NOT EXISTS process.business_execution_record"
+        )
+        table_end = self.sql_content.index(";", table_start)
+        table_definition = self.sql_content[table_start:table_end]
+
+        self.assertNotIn("duration_ms", table_definition)
+
+    def test_callback_credential_uses_service_token_structure(self) -> None:
+        """回调凭据表保存 Service Token，一个租户最多一条 ACTIVE 记录。"""
+
+        table_start = self.sql_content.index(
+            "CREATE TABLE IF NOT EXISTS tenant.tenant_callback_credential"
+        )
+        table_end = self.sql_content.index(";", table_start)
+        table_definition = self.sql_content[table_start:table_end]
+
+        self.assertIn("header_name VARCHAR(100) NOT NULL", table_definition)
+        self.assertIn("token_prefix VARCHAR(50) NOT NULL", table_definition)
+        self.assertIn("token_ciphertext TEXT NOT NULL", table_definition)
+        self.assertIn("ck_tenant_callback_credential_status", table_definition)
+        self.assertIn("CHECK (status IN ('ACTIVE', 'REVOKED'))", table_definition)
+        # 早期 HMAC 结构的列不再出现。
+        self.assertNotIn("key_id", table_definition)
+        self.assertNotIn("secret_ciphertext", table_definition)
+
+        self.assertIn(
+            "CREATE UNIQUE INDEX IF NOT EXISTS ux_tenant_callback_credential_one_active",
+            self.sql_content,
+        )
+        self.assertIn("WHERE status = 'ACTIVE'", self.sql_content)
+
+        for column_name in (
+            "header_name",
+            "token_prefix",
+            "token_ciphertext",
+        ):
+            self.assertIn(
+                f"COMMENT ON COLUMN tenant.tenant_callback_credential.{column_name} IS",
+                self.sql_content,
+            )
+
+    def test_callback_credential_upgrade_script_has_data_guard(self) -> None:
+        """凭据升级脚本必须在存在 ACTIVE 凭据时主动中止。"""
+
+        migration_path = (
+            INITIALIZATION_SQL_PATH.parent
+            / "migrations"
+            / "20260922_callback_credential_service_token.sql"
+        )
+        migration_content = migration_path.read_text(encoding="utf-8")
+
+        self.assertIn(
+            "IF EXISTS (\n        SELECT 1 FROM tenant.tenant_callback_credential "
+            "WHERE status = 'ACTIVE'\n    )",
+            migration_content,
+        )
+        self.assertIn("RAISE EXCEPTION", migration_content)
+        self.assertIn("DROP COLUMN IF EXISTS key_id", migration_content)
+        self.assertIn("DROP COLUMN IF EXISTS secret_ciphertext", migration_content)
+
     def test_seed_node_definitions_are_complete(self) -> None:
         """seed 注册了 START、APPROVAL、END 三种节点能力。"""
 

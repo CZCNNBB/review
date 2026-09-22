@@ -96,15 +96,22 @@ class DatabaseTestCaseMixin:
         self._created_person_ids: list[UUID] = []
         self._created_tenant_ids: list[UUID] = []
         self._created_business_action_ids: list[UUID] = []
+
+        # 用例的会话必须关闭，否则连接会一直挂在全局连接池上。tearDown 只在 setUp
+        # 成功时才会执行，用例自身的 tearDown 也可能在调用 close_session 之前抛出，
+        # 因此这里再注册一次清理：addCleanup 在 setUp 失败时同样会执行。
+        self.addCleanup(self.close_session)
         return self._session
 
     def close_session(self) -> None:
-        """清理本测试创建的数据并关闭会话。"""
+        """清理本测试创建的数据并关闭会话，重复调用不做任何事。"""
 
         session = getattr(self, "_session", None)
         if session is None:
             return
 
+        # 先清空引用，保证 tearDown 和 addCleanup 两个入口只会真正执行一次。
+        self._session = None
         try:
             self._delete_created_records(session)
         finally:
@@ -145,6 +152,12 @@ class DatabaseTestCaseMixin:
                 {"ids": self._created_tenant_ids},
             ),
             (
+                "租户回调凭据",
+                "DELETE FROM tenant.tenant_callback_credential "
+                "WHERE tenant_id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
                 "租户",
                 "DELETE FROM tenant.tenant WHERE id = ANY(:ids)",
                 {"ids": self._created_tenant_ids},
@@ -164,6 +177,13 @@ class DatabaseTestCaseMixin:
                 "清空实例当前节点引用",
                 "UPDATE process.approval_instance SET current_node_execution_id = NULL "
                 f"WHERE id IN ({process_instance_ids})",
+                {"ids": self._created_process_ids},
+            ),
+            (
+                # 执行记录外键指向审批实例，必须先于实例删除。
+                "业务执行记录",
+                "DELETE FROM process.business_execution_record "
+                f"WHERE approval_instance_id IN ({process_instance_ids})",
                 {"ids": self._created_process_ids},
             ),
             (

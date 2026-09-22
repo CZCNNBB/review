@@ -13,6 +13,7 @@
 - `app/server/organization/docs/人员与组织模块设计.md`：人员、部门及已经落地的租户解耦设计。
 - `app/server/process/docs/审批流模块设计.md`：节点能力、流程编排、审批人和租户使用权设计。
 - `app/server/process/docs/审批流运行模块设计.md`：显式版本、审批实例、节点执行、任务和审批记录设计。
+- `app/server/process/docs/业务执行模块设计.md`：审批通过后的单次业务调用、Service Token 和执行记录设计。
 - `app/server/process/docs/README.md`：审批流维护模块的实现说明，包含种子节点定义、校验规则码和 JSON 字段写入约束。
 - `app/server/integration/docs/业务接入模块设计.md`：业务动作、租户授权、审批使用记录和发起审批事务设计。
 - `app/server/integration/docs/业务接入接口说明.md`：业务接入接口清单、API Key 使用方式、错误码和联调步骤。
@@ -30,7 +31,7 @@ backend/
       config/                     # 全局配置
       db/                         # 数据库连接
       schemas/                    # 通用响应模型
-      scope/                      # 与租户实现无关的资源作用域接口
+      scope/                      # 与租户实现无关的资源作用域与回调配置接口
       security/                   # 通用管理认证依赖
 
     server/                       # 后端服务模块集合
@@ -49,20 +50,17 @@ backend/
         docs/                     # 人员与组织模块文档
         src/                      # 独立的人员与组织业务逻辑
 
-      process/                    # 审批流定义、版本、执行引擎与审批运行
+      process/                    # 审批流定义、版本、审批运行与通过后的业务执行
         api/
         docs/
         src/
+          execution/              # 业务执行子模块：通用 HTTP 执行器和后台 Worker
 
       integration/                # 业务动作与接入配置
         api/
         docs/
         src/
 
-      callback/                   # 业务回调任务、执行记录和重试
-        api/
-        docs/
-        src/
 ```
 
 ## 分层约定
@@ -135,7 +133,7 @@ TENANCY_ENABLED=true
 APPROVAL_ADMIN_KEY=请使用高强度随机值
 ```
 
-回调签名密钥需要使用应用主密钥加密保存。可以执行：
+业务系统提供的回调 Service Token 需要使用应用主密钥加密保存。可以执行：
 
 ```powershell
 python -B -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -148,6 +146,23 @@ APPROVAL_CREDENTIAL_MASTER_KEY=生成的Fernet密钥
 ```
 
 不要将实际密钥提交到代码仓库。
+
+业务执行 Worker 在应用进程内轮询待执行记录并调用业务系统接口，参数全部通过环境变量控制：
+
+```text
+BUSINESS_EXECUTION_WORKER_ENABLED=true          是否启动 Worker，默认 true
+BUSINESS_EXECUTION_POLL_INTERVAL_SECONDS=2      没有任务时的轮询等待秒数，必须大于 0
+BUSINESS_EXECUTION_BATCH_SIZE=10                单次最多领取的记录条数，必须是正整数
+BUSINESS_EXECUTION_CONCURRENCY=5                单进程同时执行的请求数，必须是正整数且不能大于批量数量
+```
+
+配置不合法时应用直接启动失败并指明具体环境变量。`BUSINESS_EXECUTION_WORKER_ENABLED=true`
+时必须配置 `APPROVAL_CREDENTIAL_MASTER_KEY`，否则同样启动失败，避免应用正常运行却让每一条
+执行记录都在解密阶段失败。
+
+`BUSINESS_EXECUTION_WORKER_ENABLED=false` 时审批通过仍然创建 `PENDING` 执行记录，只是当前
+进程不领取任务，适用于只提供 API 的进程或后续部署独立 Worker 的场景。多个进程同时启用时，
+总并发量约等于进程数乘以单进程并发配置，重复领取由 PostgreSQL 的 `FOR UPDATE SKIP LOCKED` 兜住。
 
 ### 初始化数据库表
 
@@ -171,6 +186,15 @@ backend/data/migrations/20260921_process_version_upgrade.sql
 ```
 
 脚本会先检查旧流程主体表是否为空，发现数据会主动中止。
+
+`tenant.tenant_callback_credential` 由早期 HMAC 签名凭据升级为 Service Token 结构时，执行：
+
+```text
+backend/data/migrations/20260922_callback_credential_service_token.sql
+```
+
+脚本会先检查是否存在 `ACTIVE` 凭据，发现有效凭据会主动中止，需要先撤销再执行。全新库由
+`init.sql` 直接创建 Service Token 结构，不需要执行本脚本。
 
 ## 当前接口
 
@@ -234,6 +258,8 @@ GET  /api/admin/tenants/{tenant_id}/business-action-bindings
 PATCH /api/admin/tenants/{tenant_id}/business-action-bindings/{binding_id}
 GET  /api/admin/tenants/{tenant_id}/process-usage-records
 GET  /api/admin/tenants/{tenant_id}/process-usage-records/{record_id}
+GET  /api/admin/execution-records
+GET  /api/admin/execution-records/{record_id}
 ```
 
 `/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 和发起审批使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
@@ -260,18 +286,31 @@ X-API-Key: appr_live_xxx
 
 启用租户能力时，请求会依次校验 API Key、租户状态、流程授权、业务动作授权和执行参数，
 并在同一个事务中提交审批实例、首批任务和租户使用记录。`action_code` 为空表示只完成审批
-不触发业务执行。`TENANCY_ENABLED=false` 时不要求 API Key，也不写入租户使用记录。
+不触发业务执行。`TENANCY_ENABLED=false` 时不要求 API Key，也不写入租户使用记录，并且
+**不接受 `action_code`**：全局模式没有租户归属，审批通过后没有可用的回调地址和 Service
+Token，这类申请会在发起阶段直接返回 409。
 
 完整接口清单、错误码和联调步骤见
 `app/server/integration/docs/业务接入接口说明.md`。
 
 审批运行接口暂未接入认证：接入项目平台登录身份前，任务查询和审批请求显式传递 `person_id`，发起审批在请求体中传递 `applicant_person_id`。
 
-## 后续模块规划
+### 审批通过后的业务执行
+
+审批最终通过时，`ApprovalEngine.finish_instance()` 在审批事务内创建唯一一条
+`process.business_execution_record`（`PENDING`）并固化业务动作配置快照，事务中不发送任何
+外部请求。事务提交后由后台 Worker 领取任务、调用业务系统并保存结果：
 
 ```text
-server/callback   业务动作回调与执行记录
+PENDING → RUNNING → SUCCEEDED
+                  → FAILED
 ```
 
+执行器通过 `approval_instance_id` 和 `tenant.process_usage_record` 确定租户，再用
+`tenant.callback_base_url` 加上动作相对路径组成请求地址，认证使用租户配置的 Service Token。
+第一版不自动重试，也不根据执行结果修改审批状态；发送请求后进程异常退出可能留下 `RUNNING`
+记录，由后台页面展示并交给人工核对。查询接口不返回 Service Token、密文和完整认证请求头。
+
 `server/integration` 和 `server/process` 的第一版已经落地：业务动作定义与参数规则在
-`integration`，审批流定义和运行在 `process`。当前先保持单体部署，按模块边界逐步实现。
+`integration`，审批流定义、运行和审批通过后的业务执行在 `process`。当前先保持单体
+部署，按模块边界逐步实现。

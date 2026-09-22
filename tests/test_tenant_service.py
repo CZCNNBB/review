@@ -15,7 +15,7 @@ from app.server.tenant.src.service.exceptions import (
     TenantConflictError,
 )
 from app.server.tenant.src.service.tenant_service import TenantService
-from app.server.tenant.src.utils.credential import CallbackSecretCipher
+from app.server.tenant.src.utils.credential import CredentialCipher
 
 
 class TenantServiceTestCase(unittest.TestCase):
@@ -100,20 +100,64 @@ class TenantServiceTestCase(unittest.TestCase):
         with self.assertRaises(TenantConflictError):
             self.service.create_tenant(duplicate_request, self.db)
 
-    def test_callback_secret_is_encrypted_and_can_be_decrypted(self) -> None:
-        """回调密钥只以密文落库，并可由相同应用主密钥解密。"""
+    def test_service_token_is_encrypted_and_can_be_decrypted(self) -> None:
+        """Service Token 只以密文落库，并可由相同应用主密钥解密还原。"""
 
         tenant = self.create_tenant()
-        credential, plaintext_secret = self.service.create_callback_credential(
+        credential = self.service.create_callback_credential(
             tenant_id=tenant.id,
-            name="生产环境回调签名",
+            name="生产环境回调",
+            token="service_token_plaintext",
+            header_name="Authorization",
+            token_prefix="Bearer",
             expires_at=None,
             db=self.db,
         )
 
-        self.assertNotEqual(credential.secret_ciphertext, plaintext_secret)
-        cipher = CallbackSecretCipher.from_environment()
-        self.assertEqual(cipher.decrypt(credential.secret_ciphertext), plaintext_secret)
+        self.assertNotEqual(credential.token_ciphertext, "service_token_plaintext")
+        self.assertNotIn("service_token_plaintext", credential.token_ciphertext)
+        cipher = CredentialCipher.from_environment()
+        self.assertEqual(
+            cipher.decrypt(credential.token_ciphertext),
+            "service_token_plaintext",
+        )
+
+    def test_replacing_service_token_revokes_previous_credential(self) -> None:
+        """一个租户同时只保留一个 ACTIVE 凭据，更换 Token 时旧凭据被撤销。"""
+
+        tenant = self.create_tenant()
+        first_credential = self.service.create_callback_credential(
+            tenant_id=tenant.id,
+            name="第一版 Token",
+            token="service_token_first",
+            header_name="Authorization",
+            token_prefix="Bearer",
+            expires_at=None,
+            db=self.db,
+        )
+        second_credential = self.service.create_callback_credential(
+            tenant_id=tenant.id,
+            name="第二版 Token",
+            token="service_token_second",
+            header_name="X-Token",
+            token_prefix="",
+            expires_at=None,
+            db=self.db,
+        )
+
+        self.db.refresh(first_credential)
+        self.assertEqual(first_credential.status, "REVOKED")
+        self.assertIsNotNone(first_credential.revoked_at)
+        self.assertEqual(second_credential.status, "ACTIVE")
+        self.assertEqual(second_credential.header_name, "X-Token")
+        self.assertEqual(second_credential.token_prefix, "")
+
+        credentials = self.service.list_callback_credentials(tenant.id, self.db)
+        active_credentials = [
+            credential for credential in credentials if credential.status == "ACTIVE"
+        ]
+        self.assertEqual(len(active_credentials), 1)
+        self.assertEqual(active_credentials[0].id, second_credential.id)
 
     def test_cross_tenant_credential_revoke_is_rejected(self) -> None:
         """一个租户不能撤销另一个租户的 API Key。"""

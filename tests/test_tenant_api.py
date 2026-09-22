@@ -173,6 +173,125 @@ class TenantApiTestCase(unittest.TestCase):
         self.assertEqual(allowed_response.status_code, 200)
         self.assertEqual(denied_response.status_code, 403)
 
+    def test_callback_credential_never_returns_the_service_token(self) -> None:
+        """配置 Service Token 时只返回凭据元数据，不回显 Token 明文。"""
+
+        admin_headers = {"X-Admin-Key": "test-admin-key"}
+        tenant_response = self.client.post(
+            "/api/admin/tenants",
+            headers=admin_headers,
+            json={
+                "code": "callback_secret",
+                "name": "回调凭据测试租户",
+                "callback_base_url": "https://callback.example.com/internal",
+            },
+        )
+        tenant_id = tenant_response.json()["data"]["id"]
+        service_token = "service_token_never_returned"
+
+        create_response = self.client.post(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+            json={
+                "name": "生产环境回调",
+                "token": service_token,
+                "header_name": "X-Service-Token",
+                "token_prefix": "",
+            },
+        )
+
+        self.assertEqual(create_response.status_code, 201, create_response.text)
+        created = create_response.json()["data"]
+        self.assertEqual(created["header_name"], "X-Service-Token")
+        self.assertEqual(created["token_prefix"], "")
+        self.assertEqual(created["status"], "ACTIVE")
+        self.assertNotIn(service_token, create_response.text)
+        self.assertNotIn("token_ciphertext", created)
+
+        list_response = self.client.get(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+        )
+        self.assertEqual(list_response.status_code, 200)
+        self.assertNotIn(service_token, list_response.text)
+
+    def test_replacing_callback_credential_revokes_previous(self) -> None:
+        """一个租户同时只保留一个有效凭据，替换 Token 时旧凭据被撤销。"""
+
+        admin_headers = {"X-Admin-Key": "test-admin-key"}
+        tenant_response = self.client.post(
+            "/api/admin/tenants",
+            headers=admin_headers,
+            json={
+                "code": "credential_replace",
+                "name": "凭据替换测试租户",
+                "callback_base_url": "https://replace.example.com/internal",
+            },
+        )
+        tenant_id = tenant_response.json()["data"]["id"]
+
+        first_response = self.client.post(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+            json={"name": "第一版", "token": "first_token"},
+        )
+        self.assertEqual(first_response.status_code, 201, first_response.text)
+        first_credential_id = first_response.json()["data"]["id"]
+
+        second_response = self.client.post(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+            json={"name": "第二版", "token": "second_token"},
+        )
+        self.assertEqual(second_response.status_code, 201, second_response.text)
+
+        credentials = self.client.get(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+        ).json()["data"]
+        statuses = {item["id"]: item["status"] for item in credentials}
+        self.assertEqual(statuses[first_credential_id], "REVOKED")
+        self.assertEqual(
+            [item["status"] for item in credentials].count("ACTIVE"),
+            1,
+        )
+
+        # 默认请求头为 Authorization，前缀为 Bearer。
+        active_credential = next(
+            item for item in credentials if item["status"] == "ACTIVE"
+        )
+        self.assertEqual(active_credential["header_name"], "Authorization")
+        self.assertEqual(active_credential["token_prefix"], "Bearer")
+
+    def test_invalid_callback_credential_request_is_rejected(self) -> None:
+        """请求头名称不合法或 Token 为空时接口直接拒绝。"""
+
+        admin_headers = {"X-Admin-Key": "test-admin-key"}
+        tenant_response = self.client.post(
+            "/api/admin/tenants",
+            headers=admin_headers,
+            json={
+                "code": "credential_invalid",
+                "name": "凭据校验测试租户",
+                "callback_base_url": "https://invalid.example.com/internal",
+            },
+        )
+        tenant_id = tenant_response.json()["data"]["id"]
+
+        invalid_header = self.client.post(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+            json={"name": "非法请求头", "token": "abc", "header_name": "Bad Header"},
+        )
+        empty_token = self.client.post(
+            f"/api/admin/tenants/{tenant_id}/callback-credentials",
+            headers=admin_headers,
+            json={"name": "空 Token", "token": "   "},
+        )
+
+        self.assertEqual(invalid_header.status_code, 422)
+        self.assertEqual(empty_token.status_code, 422)
+
     def test_tenant_access_guard_is_no_op_in_global_mode(self) -> None:
         """关闭租户能力后，访问守卫不要求 API Key 或资源绑定。"""
 

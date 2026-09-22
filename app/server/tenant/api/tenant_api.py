@@ -13,7 +13,6 @@ from app.server.tenant.src.schemas.tenant_schema import (
     ApiKeyCreatedResponse,
     ApiKeyResponse,
     CallbackCredentialCreateRequest,
-    CallbackCredentialCreatedResponse,
     CallbackCredentialResponse,
     TenantContextResponse,
     TenantCreateRequest,
@@ -189,30 +188,33 @@ def revoke_api_key(
 
 @router.post(
     "/admin/tenants/{tenant_id}/callback-credentials",
-    response_model=Result[CallbackCredentialCreatedResponse],
+    response_model=Result[CallbackCredentialResponse],
     status_code=status.HTTP_201_CREATED,
     dependencies=[Depends(verify_admin_key)],
-    summary="创建回调签名凭据",
+    summary="配置回调 Service Token",
 )
 def create_callback_credential(
     tenant_id: UUID,
     request: CallbackCredentialCreateRequest,
     db: Session = Depends(get_postgres_engine),
-) -> Result[CallbackCredentialCreatedResponse]:
-    """创建回调签名凭据，密钥明文只在本次响应中返回。"""
+) -> Result[CallbackCredentialResponse]:
+    """保存业务系统为审批中心服务账号签发的 Service Token。
+
+    Token 由业务系统签发，审批中心加密保存后只返回凭据元数据，不回显 Token 明文。
+    租户原有的有效凭据会在同一个事务中撤销。
+    """
 
     try:
-        credential, secret = tenant_service.create_callback_credential(
+        credential = tenant_service.create_callback_credential(
             tenant_id=tenant_id,
             name=request.name,
+            token=request.token,
+            header_name=request.header_name,
+            token_prefix=request.token_prefix,
             expires_at=request.expires_at,
             db=db,
         )
-        response = CallbackCredentialCreatedResponse(
-            **CallbackCredentialResponse.model_validate(credential).model_dump(),
-            secret=secret,
-        )
-        return Result.success(response)
+        return Result.success(CallbackCredentialResponse.model_validate(credential))
     except (
         TenantNotFoundError,
         TenantConflictError,
@@ -225,13 +227,13 @@ def create_callback_credential(
     "/admin/tenants/{tenant_id}/callback-credentials",
     response_model=Result[list[CallbackCredentialResponse]],
     dependencies=[Depends(verify_admin_key)],
-    summary="查询回调签名凭据",
+    summary="查询回调 Service Token 凭据",
 )
 def list_callback_credentials(
     tenant_id: UUID,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[list[CallbackCredentialResponse]]:
-    """查询回调凭据元数据，不返回明文和密文。"""
+    """查询回调凭据元数据，不返回 Token 明文和密文。"""
 
     try:
         credentials = tenant_service.list_callback_credentials(tenant_id, db)
@@ -246,14 +248,14 @@ def list_callback_credentials(
     "/admin/tenants/{tenant_id}/callback-credentials/{credential_id}/revoke",
     response_model=Result[CallbackCredentialResponse],
     dependencies=[Depends(verify_admin_key)],
-    summary="撤销回调签名凭据",
+    summary="撤销回调 Service Token 凭据",
 )
 def revoke_callback_credential(
     tenant_id: UUID,
     credential_id: UUID,
     db: Session = Depends(get_postgres_engine),
 ) -> Result[CallbackCredentialResponse]:
-    """撤销指定回调签名凭据。"""
+    """撤销指定回调 Service Token 凭据，撤销后不能恢复。"""
 
     try:
         credential = tenant_service.revoke_callback_credential(tenant_id, credential_id, db)

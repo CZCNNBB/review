@@ -13,6 +13,7 @@ from sqlmodel import Session
 from app.server.integration.src.service.business_action_service import (
     BusinessActionService,
 )
+from app.server.integration.src.service.exceptions import BusinessActionStateError
 from app.server.process.src.schemas.approval_schema import ApprovalStartRequest
 from app.server.process.src.service.approval_instance_service import (
     ApprovalInstanceService,
@@ -55,6 +56,15 @@ class BusinessAccessService:
         context.process_scope.require_access(process_id, db)
 
         if request.action_code:
+            # 业务执行必须通过租户使用记录确定回调地址和 Service Token，全局模式下没有
+            # 租户归属，审批通过后无法执行。这里在发起阶段直接拒绝，不让申请进入一条
+            # 注定失败的链路。
+            if context.tenant_id is None:
+                raise BusinessActionStateError(
+                    "当前运行在全局模式，不能使用 action_code："
+                    "审批通过后没有可用的租户回调配置"
+                )
+
             business_action = self.business_action_service.resolve_tenant_action(
                 request.action_code,
                 context.action_scope,

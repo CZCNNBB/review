@@ -990,7 +990,8 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
 
         response = self.start_approval(
             process_id,
-            self.build_start_body("BIZ-GLOBAL-001"),
+            # 全局模式没有租户归属，因此不支持业务执行，只能发起纯审批。
+            self.build_start_body("BIZ-GLOBAL-001", action_code=None),
         )
         self.assertEqual(response.status_code, 201, response.text)
         started = response.json()["data"]
@@ -1009,7 +1010,7 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
 
         response = self.start_approval(
             process_id,
-            self.build_start_body("BIZ-GLOBAL-NO-BINDING"),
+            self.build_start_body("BIZ-GLOBAL-NO-BINDING", action_code=None),
         )
         self.assertEqual(response.status_code, 201, response.text)
 
@@ -1018,6 +1019,36 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             TenantBindingRepository().list_usage_records(tenant_id, self.db),
             [],
         )
+
+    def test_global_mode_rejects_action_code(self) -> None:
+        """全局模式下带 action_code 的申请在发起阶段就被拒绝。
+
+        业务执行必须通过租户使用记录确定回调地址和 Service Token，全局模式没有租户
+        归属，审批通过后无法执行，因此不允许这类申请进入注定失败的链路。
+        """
+
+        os.environ["TENANCY_ENABLED"] = "false"
+        process_id = self.publish_linear_process([self.approver_id])
+
+        response = self.start_approval(
+            process_id,
+            self.build_start_body("BIZ-GLOBAL-ACTION"),
+        )
+
+        self.assertEqual(response.status_code, 409, response.text)
+        self.assertIn("全局模式", response.json()["detail"])
+
+    def test_tenant_mode_still_accepts_action_code(self) -> None:
+        """租户模式不受全局模式限制影响，带 action_code 的申请正常发起。"""
+
+        tenant_id, api_key, process_id = self.prepare_tenant()
+        response = self.start_approval(
+            process_id,
+            self.build_start_body("BIZ-TENANT-ACTION"),
+            api_key=api_key,
+        )
+
+        self.assertEqual(response.status_code, 201, response.text)
 
     # ------------------------------------------------------------------
     # 管理接口

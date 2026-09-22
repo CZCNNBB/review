@@ -41,6 +41,9 @@ from app.server.process.src.models.process_model import (
     utc_now,
 )
 from app.server.process.src.repository.approval_repository import ApprovalRepository
+from app.server.process.src.service.business_execution_service import (
+    BusinessExecutionService,
+)
 from app.server.process.src.service.exceptions import ProcessStateError
 
 
@@ -173,11 +176,19 @@ class ApprovalEngine:
         self,
         repository: ApprovalRepository | None = None,
         organization_service: OrganizationService | None = None,
+        business_execution_service: BusinessExecutionService | None = None,
     ):
-        """初始化推进引擎并允许测试注入依赖。"""
+        """初始化推进引擎并允许测试注入依赖。
+
+        业务执行属于 process 内部子模块，引擎直接持有同模块的业务执行服务，不需要
+        跨模块端口。单元测试可以注入测试替身，保持推进逻辑可以独立验证。
+        """
 
         self.repository = repository or ApprovalRepository()
         self.organization_service = organization_service or OrganizationService()
+        self.business_execution_service = (
+            business_execution_service or BusinessExecutionService()
+        )
 
     # ------------------------------------------------------------------
     # 对外入口
@@ -296,8 +307,11 @@ class ApprovalEngine:
     ) -> None:
         """按结束节点的结果状态结束审批实例。
 
-        审批通过后需要触发的业务执行任务属于 callback 模块，本模块只结束实例，
-        不在审批事务中调用任何外部接口。
+        这是实例进入最终状态的唯一汇合点：人工审批推进和 START → END 直接结束都会
+        经过这里，因此业务执行记录只能挂在本方法，不能挂在任务服务上。
+
+        审批通过时由同模块的业务执行服务写入 PENDING 执行记录，但只写当前 Session，
+        不提交事务，也不发送任何外部 HTTP 请求。
         """
 
         now = utc_now()
@@ -319,6 +333,14 @@ class ApprovalEngine:
         instance.current_node_execution_id = None
         instance.updated_at = now
         self.repository.add_instance(instance, db)
+
+        # 记录创建与实例状态更新同事务：写入失败时审批也会一起回滚，避免出现审批
+        # 已经通过却没有执行任务的状态。
+        self.business_execution_service.create_execution_record(
+            instance,
+            result_status,
+            db,
+        )
 
     def fail_instance(
         self,

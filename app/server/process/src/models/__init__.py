@@ -6,6 +6,7 @@ from app.server.process.src.models.approval_model import (
     ApprovalRecord,
     ApprovalTask,
 )
+from app.server.process.src.models.execution_model import BusinessExecutionRecord
 from app.server.process.src.models.process_model import (
     ApprovalProcess,
     ApprovalProcessVersion,
@@ -22,4 +23,5 @@ __all__ = [
     "ApprovalNodeExecution",
     "ApprovalTask",
     "ApprovalRecord",
+    "BusinessExecutionRecord",
 ]

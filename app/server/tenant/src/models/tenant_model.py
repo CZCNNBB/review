@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy import Column, DateTime, Text, UniqueConstraint
+from sqlalchemy import Column, DateTime, Index, Text, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 
@@ -54,17 +54,35 @@ class TenantApiKey(SQLModel, table=True):
 
 
 class TenantCallbackCredential(SQLModel, table=True):
-    """审批中心向业务系统发送回调时使用的签名凭据。"""
+    """审批中心回调业务系统时使用的 Service Token 凭据。
+
+    业务系统为审批中心的服务账号签发长期 Token，审批中心复用业务系统已有的认证
+    请求头。回调时需要把 Token 原样发回，因此保存密文而不是哈希。
+    """
 
     __tablename__ = "tenant_callback_credential"
-    __table_args__ = {"schema": TENANT_DB_SCHEMA}
+    __table_args__ = (
+        # 一个租户同一时间只允许存在一个 ACTIVE 凭据，替换 Token 时必须在同一个事务中
+        # 撤销旧凭据，避免出现同时有两个有效凭据或没有可用凭据的状态。
+        Index(
+            "ux_tenant_callback_credential_one_active",
+            "tenant_id",
+            unique=True,
+            postgresql_where=text("status = 'ACTIVE'"),
+            sqlite_where=text("status = 'ACTIVE'"),
+        ),
+        {"schema": TENANT_DB_SCHEMA},
+    )
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
     name: str = Field(max_length=100)
-    key_id: str = Field(max_length=64, unique=True, index=True)
-    # 回调签名时需要取回原始密钥，因此保存由应用主密钥加密后的密文。
-    secret_ciphertext: str = Field(sa_column=Column(Text, nullable=False))
+    # 复用业务系统现有的认证请求头名称，默认 Authorization。
+    header_name: str = Field(default="Authorization", max_length=100)
+    # Token 前缀，例如 Bearer。允许为空字符串，表示认证头里直接放 Token 明文。
+    token_prefix: str = Field(default="Bearer", max_length=50)
+    # Service Token 由业务系统签发，审批中心只保存应用主密钥加密后的密文。
+    token_ciphertext: str = Field(sa_column=Column(Text, nullable=False))
     status: str = Field(default="ACTIVE", max_length=20, index=True)
     expires_at: Optional[datetime] = Field(default=None, sa_type=DateTime(timezone=True))
     created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
