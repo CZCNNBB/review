@@ -74,7 +74,10 @@ class BusinessExecutionWorker:
         self._session_factory = session_factory or _default_session_factory
         self.executor = executor or BusinessActionExecutor(client=http_client)
         self._pool: ThreadPoolExecutor | None = None
-        # 线程设为守护线程：即使某个请求长时间不返回，也不会阻塞进程退出。
+        # 领取锁让“提交 RUNNING”和“发出停止信号”之间有明确边界，避免停机开始后
+        # 协调线程又领取一批新任务。
+        self._claim_lock = threading.Lock()
+        # 守护线程只用于应对进程被强制终止的最后兜底；正常关闭由 lifespan 等待完成。
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -88,6 +91,9 @@ class BusinessExecutionWorker:
         if self._thread is not None and self._thread.is_alive():
             return
 
+        # stop() 会关闭连接池；再次启动同一个 Worker 时必须先创建新的 HTTP Client，
+        # 否则任务虽然能被领取，却会在发送请求时因 Client 已关闭而全部失败。
+        self.executor.open()
         self._ensure_pool()
         self._stop_event.clear()
         self._thread = threading.Thread(
@@ -97,31 +103,41 @@ class BusinessExecutionWorker:
         )
         self._thread.start()
 
-    def stop(self, timeout_seconds: float = 30.0) -> None:
+    def stop(self, timeout_seconds: float | None = None) -> bool:
         """通知轮询停止，等待当前批次结束后释放线程池和 HTTP Client。
 
         停止后不再领取新任务，仍然停留在 PENDING 的记录留给下次启动继续处理。
+        默认不设置内部超时，确保已经领取为 RUNNING 的任务保存最终结果后才返回。测试或
+        运维探测可以显式传入超时时间；返回 False 时不能关闭仍在使用的 Client，调用方
+        可以稍后再次调用 stop() 完成资源回收。
         """
 
-        self._stop_event.set()
+        # 等待正在进行的领取事务提交，再发出停止信号。锁释放之后，协调线程无法再开始
+        # 新的领取事务；此时已经提交为 RUNNING 的记录属于必须完成的在途任务。
+        with self._claim_lock:
+            self._stop_event.set()
 
         thread = self._thread
         if thread is not None:
             thread.join(timeout_seconds)
             if thread.is_alive():
-                # 只会在外部接口长时间不返回时出现。记录明确日志，不阻塞应用关闭。
+                # HTTP 请求还在执行时不能关闭共享 Client，也不能把线程引用清空，否则
+                # 后续 start() 可能与旧线程并行运行并破坏执行状态。
                 logger.warning(
-                    "业务执行 Worker 在 %.1f 秒内没有停止，仍有请求在执行中",
+                    "业务执行 Worker 在 %s 秒内没有停止，仍有请求在执行中",
                     timeout_seconds,
                 )
+                return False
         self._thread = None
 
         pool = self._pool
         if pool is not None:
-            # 取消尚未开始的任务，它们会保持 RUNNING 状态由后台人员核对，第一版不自动重发。
-            pool.shutdown(wait=False, cancel_futures=True)
+            # 协调线程退出前会等待当前批次的 Future，因此这里可以安全关闭线程池，不会
+            # 把已经标记 RUNNING 但尚未开始的任务取消在半路。
+            pool.shutdown(wait=True, cancel_futures=False)
             self._pool = None
         self.executor.close()
+        return True
 
     def _ensure_pool(self) -> ThreadPoolExecutor:
         """延迟创建线程池，支持 start 和 stop 反复调用。"""
@@ -151,6 +167,13 @@ class BusinessExecutionWorker:
                 # 本轮没有把批次领满，说明队列已经清空，等待下一个轮询周期。
                 self._stop_event.wait(self.settings.poll_interval_seconds)
 
+    def _claim_limit(self, remaining_batch_size: int) -> int:
+        """返回当前一波能够立即交给线程池执行的最大任务数量。"""
+
+        # 不领取超过并发槽位的任务，避免任务只是在执行器队列中等待，却已经被数据库
+        # 标记为 RUNNING。这样关闭服务时只需等待真正开始处理的任务。
+        return min(remaining_batch_size, self.settings.concurrency)
+
     def run_once(self) -> int:
         """领取并处理一批待执行记录，返回本批实际处理的记录数量。
 
@@ -158,35 +181,50 @@ class BusinessExecutionWorker:
         HTTP 请求，避免拿着数据库行锁等待外部接口。
         """
 
-        claimed_records = self._claim_batch()
-        if not claimed_records:
-            return 0
-
-        # 按并发配置提交任务，并等待本批全部结束再进入下一轮，保证单进程内的并发
-        # 数量不会超过 BUSINESS_EXECUTION_CONCURRENCY。
+        processed_count = 0
         pool = self._ensure_pool()
-        futures = [
-            pool.submit(self._process_record, record) for record in claimed_records
-        ]
-        for future in futures:
-            # _process_record 内部已经兜住全部异常，这里只做同步等待。
-            future.result()
-        return len(claimed_records)
 
-    def _claim_batch(self) -> list[BusinessExecutionRecord]:
+        # 一个轮询批次可以包含多波执行。每波最多领取并发数条，等本波完成后再领取
+        # 下一波，因此数据库里的 RUNNING 数量始终对应真正占用执行槽位的任务。
+        while (
+            processed_count < self.settings.batch_size
+            and not self._stop_event.is_set()
+        ):
+            remaining_batch_size = self.settings.batch_size - processed_count
+            claim_limit = self._claim_limit(remaining_batch_size)
+            claimed_records = self._claim_batch(claim_limit)
+            if not claimed_records:
+                break
+
+            futures = [
+                pool.submit(self._process_record, record) for record in claimed_records
+            ]
+            for future in futures:
+                # _process_record 内部已经兜住全部异常，这里只做同步等待。
+                future.result()
+            processed_count += len(claimed_records)
+
+        return processed_count
+
+    def _claim_batch(self, claim_limit: int) -> list[BusinessExecutionRecord]:
         """在短事务中领取一批 PENDING 记录并标记为 RUNNING。"""
 
-        with self._session_factory() as db:
-            try:
-                records = self.repository.claim_pending_records(
-                    self.settings.batch_size,
-                    db,
-                )
-                db.commit()
-            except Exception:
-                db.rollback()
-                raise
-            return records
+        with self._claim_lock:
+            # stop() 已经发出信号后不再打开会话，也不再领取新任务。
+            if self._stop_event.is_set():
+                return []
+
+            with self._session_factory() as db:
+                try:
+                    records = self.repository.claim_pending_records(
+                        claim_limit,
+                        db,
+                    )
+                    db.commit()
+                except Exception:
+                    db.rollback()
+                    raise
+                return records
 
     # ------------------------------------------------------------------
     # 单条记录处理

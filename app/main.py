@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sys
 from pathlib import Path
@@ -39,7 +40,9 @@ async def lifespan(_: FastAPI):
     try:
         yield
     finally:
-        stop_business_execution_worker(worker)
+        # 停机等待属于同步阻塞操作，放到工作线程中执行，避免阻塞 FastAPI 事件循环中的
+        # 其他 lifespan 清理动作。Worker 会先停止领取，再等待当前 RUNNING 任务落库。
+        await asyncio.to_thread(stop_business_execution_worker, worker)
 
 
 def create_app() -> FastAPI:

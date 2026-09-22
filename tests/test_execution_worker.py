@@ -110,10 +110,9 @@ class WorkerTestCase(unittest.TestCase):
         SQLModel.metadata.create_all(self.engine)
         self.handled_requests: list[httpx.Request] = []
         self.handler = lambda request: httpx.Response(200, json={"ok": True})
-        self.client = httpx.Client(
-            transport=httpx.MockTransport(self.dispatch_request)
-        )
-        self.addCleanup(self.client.close)
+        self.http_clients: list[httpx.Client] = []
+        self.client = self.create_http_client()
+        self.addCleanup(self.close_http_clients)
         self.workers: list[BusinessExecutionWorker] = []
 
     def tearDown(self) -> None:
@@ -133,6 +132,22 @@ class WorkerTestCase(unittest.TestCase):
 
         self.handled_requests.append(request)
         return self.handler(request)
+
+    def create_http_client(self) -> httpx.Client:
+        """创建使用同一请求处理器的 Client，供 Worker 重启时重建连接池。"""
+
+        client = httpx.Client(
+            transport=httpx.MockTransport(self.dispatch_request)
+        )
+        self.http_clients.append(client)
+        return client
+
+    def close_http_clients(self) -> None:
+        """关闭测试期间创建的全部 Client，重复关闭不会产生副作用。"""
+
+        for client in self.http_clients:
+            if not client.is_closed:
+                client.close()
 
     def open_session(self) -> Session:
         """创建测试使用的数据库会话。"""
@@ -158,7 +173,10 @@ class WorkerTestCase(unittest.TestCase):
             ),
             session_factory=self.open_session,
             callback_target_resolver=resolver or StubCallbackTargetResolver(),
-            executor=BusinessActionExecutor(client=self.client),
+            executor=BusinessActionExecutor(
+                client=self.client,
+                client_factory=self.create_http_client,
+            ),
         )
         self.workers.append(worker)
         if start:
@@ -387,16 +405,112 @@ class WorkerTestCase(unittest.TestCase):
         statuses = {record.status for record in self.list_records()}
         self.assertEqual(statuses, {EXECUTION_STATUS_SUCCEEDED})
 
+    def test_stop_timeout_keeps_inflight_client_open(self) -> None:
+        """关闭等待超时时不能销毁仍被执行线程使用的 HTTP Client。"""
+
+        request_started = threading.Event()
+        allow_response = threading.Event()
+
+        def blocking_handler(request: httpx.Request) -> httpx.Response:
+            """等待测试放行，模拟超过 Worker 关闭等待时间的在途请求。"""
+
+            request_started.set()
+            allow_response.wait(timeout=10)
+            return httpx.Response(200)
+
+        self.handler = blocking_handler
+        record_id = self.create_record()
+        worker = self.build_worker(
+            batch_size=1,
+            concurrency=1,
+            poll_interval_seconds=0.01,
+            start=True,
+        )
+
+        self.assertTrue(request_started.wait(timeout=10))
+        self.assertFalse(worker.stop(timeout_seconds=0.01))
+        self.assertFalse(self.client.is_closed)
+
+        allow_response.set()
+        self.assertTrue(worker.stop(timeout_seconds=10))
+
+        record = self.get_record(record_id)
+        self.assertEqual(record.status, EXECUTION_STATUS_SUCCEEDED)
+        self.assertTrue(self.client.is_closed)
+
+    def test_shutdown_waits_running_and_leaves_unclaimed_pending(self) -> None:
+        """正常停机只等待在途任务，尚未领取的记录继续保持 PENDING。"""
+
+        request_started = threading.Event()
+        allow_response = threading.Event()
+        stop_finished = threading.Event()
+
+        def blocking_handler(request: httpx.Request) -> httpx.Response:
+            """阻塞唯一的执行槽位，便于观察停机期间的记录状态。"""
+
+            request_started.set()
+            allow_response.wait(timeout=10)
+            return httpx.Response(200)
+
+        def stop_worker() -> None:
+            """在独立线程执行无超时停机，并记录停机是否已经结束。"""
+
+            worker.stop(timeout_seconds=None)
+            stop_finished.set()
+
+        self.handler = blocking_handler
+        record_ids = [self.create_record() for _ in range(3)]
+        worker = self.build_worker(
+            batch_size=3,
+            concurrency=1,
+            poll_interval_seconds=0.01,
+            start=True,
+        )
+
+        self.assertTrue(request_started.wait(timeout=10))
+        shutdown_thread = threading.Thread(target=stop_worker)
+        shutdown_thread.start()
+        time.sleep(0.05)
+
+        statuses_during_shutdown = [
+            self.get_record(record_id).status for record_id in record_ids
+        ]
+        self.assertEqual(statuses_during_shutdown.count(EXECUTION_STATUS_RUNNING), 1)
+        self.assertEqual(statuses_during_shutdown.count(EXECUTION_STATUS_PENDING), 2)
+        self.assertFalse(stop_finished.is_set())
+
+        allow_response.set()
+        shutdown_thread.join(timeout=10)
+        self.assertTrue(stop_finished.is_set())
+
+        final_statuses = [
+            self.get_record(record_id).status for record_id in record_ids
+        ]
+        self.assertEqual(final_statuses.count(EXECUTION_STATUS_SUCCEEDED), 1)
+        self.assertEqual(final_statuses.count(EXECUTION_STATUS_PENDING), 2)
+
     def test_start_is_idempotent_and_worker_can_restart(self) -> None:
-        """重复启动不会创建第二个循环，停止后可以重新启动。"""
+        """停止后重新启动会重建 HTTP Client，并能正常处理新的任务。"""
 
-        worker = self.build_worker(poll_interval_seconds=30.0, start=True)
-        worker.start()
-        worker.stop(timeout_seconds=10)
+        worker = self.build_worker(poll_interval_seconds=0.01, start=True)
         worker.start()
         worker.stop(timeout_seconds=10)
 
-        self.assertEqual(self.handled_requests, [])
+        record_id = self.create_record()
+        worker.start()
+
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            if self.get_record(record_id).status == EXECUTION_STATUS_SUCCEEDED:
+                break
+            time.sleep(0.01)
+
+        worker.stop(timeout_seconds=10)
+
+        record = self.get_record(record_id)
+        self.assertEqual(record.status, EXECUTION_STATUS_SUCCEEDED)
+        self.assertEqual(record.http_status_code, 200)
+        self.assertEqual(len(self.handled_requests), 1)
 
 
 class WorkerSkipLockedTestCase(DatabaseTestCaseMixin, unittest.TestCase):

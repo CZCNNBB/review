@@ -52,12 +52,14 @@ def start_business_execution_worker() -> BusinessExecutionWorker | None:
 
 
 def stop_business_execution_worker(worker: BusinessExecutionWorker | None) -> None:
-    """停止业务执行 Worker，等待当前批次结束并关闭复用的 HTTP Client。"""
+    """停止领取新任务，等待 RUNNING 任务结束并关闭 Worker 资源。"""
 
     if worker is None:
         return
 
-    worker.stop()
+    # 正常关闭不设置内部等待上限：已经领取为 RUNNING 的任务必须先保存最终结果，尚未领取
+    # 的 PENDING 任务保留到服务下次启动后处理。
+    worker.stop(timeout_seconds=None)
     logger.info("业务执行 Worker 已停止")
 
 

@@ -7,6 +7,7 @@
 执行器只负责发出一次请求并根据 HTTP 状态码判断结果，不修改审批状态，也不访问数据库。
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import httpx
@@ -120,13 +121,44 @@ class BusinessActionExecutor:
     实例，在应用关闭时统一关闭，避免每个任务都重新建立连接。
     """
 
-    def __init__(self, client: httpx.Client | None = None):
-        """初始化执行器并允许测试注入 MockTransport 客户端。"""
+    def __init__(
+        self,
+        client: httpx.Client | None = None,
+        client_factory: Callable[[], httpx.Client] | None = None,
+    ):
+        """初始化执行器，并保留重新启动 Worker 时重建 Client 的工厂。
 
-        self._client = client or httpx.Client(
+        生产环境使用默认工厂。测试注入自定义 Client 后如果还需要验证重启，必须同时
+        注入可以创建同类 Client 的工厂；否则在已关闭 Client 上重新启动时会明确报错，
+        不会等到领取任务后才把业务执行错误地标记为 FAILED。
+        """
+
+        self._client_factory = client_factory
+        if client is None:
+            self._client_factory = client_factory or self._create_default_client
+            self._client = self._client_factory()
+        else:
+            self._client = client
+
+    @staticmethod
+    def _create_default_client() -> httpx.Client:
+        """创建生产环境使用的同步 HTTP Client。"""
+
+        return httpx.Client(
             # 回调地址必须来自租户登记的基础地址，不跟随业务系统返回的跳转。
             follow_redirects=False,
         )
+
+    def open(self) -> None:
+        """确保执行器持有可用 Client，支持同一个 Worker 停止后重新启动。"""
+
+        if not self._client.is_closed:
+            return
+        if self._client_factory is None:
+            raise RuntimeError(
+                "业务执行器的 HTTP Client 已关闭，且没有配置重新创建 Client 的工厂"
+            )
+        self._client = self._client_factory()
 
     def execute(
         self,
@@ -199,7 +231,8 @@ class BusinessActionExecutor:
     def close(self) -> None:
         """关闭复用的 HTTP Client，应用停止时调用。"""
 
-        self._client.close()
+        if not self._client.is_closed:
+            self._client.close()
 
     @staticmethod
     def _resolve_timeout_seconds(timeout_ms: int | None) -> float:
