@@ -97,3 +97,83 @@ class PersonBinding(SQLModel, table=True):
     status: str = Field(default="ENABLED", max_length=20, index=True)
     created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
     updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+
+
+class ProcessBinding(SQLModel, table=True):
+    """租户可以使用的审批流授权。"""
+
+    __tablename__ = "process_binding"
+    __table_args__ = (
+        # 一个租户对同一条审批流只保留一条授权记录，停用后重新启用即可。
+        UniqueConstraint(
+            "tenant_id",
+            "process_id",
+            name="uq_process_binding_resource",
+        ),
+        {"schema": TENANT_DB_SCHEMA},
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
+    # 审批流 ID 不建立跨 Schema 外键，保证 tenant Schema 可以独立移除。
+    process_id: UUID = Field(index=True)
+    status: str = Field(default="ENABLED", max_length=20, index=True)
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+
+
+class BusinessActionBinding(SQLModel, table=True):
+    """租户可以使用的业务动作授权。"""
+
+    __tablename__ = "business_action_binding"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id",
+            "business_action_id",
+            name="uq_business_action_binding_resource",
+        ),
+        {"schema": TENANT_DB_SCHEMA},
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
+    # 业务动作 ID 不建立跨 Schema 外键，保证 tenant Schema 可以独立移除。
+    business_action_id: UUID = Field(index=True)
+    status: str = Field(default="ENABLED", max_length=20, index=True)
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+    updated_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
+
+
+class ProcessUsageRecord(SQLModel, table=True):
+    """租户发起审批的使用记录，同时是审批实例的租户归属入口。
+
+    该表只保存归属和关联信息。审批状态、当前节点和耗时统一从 process 运行表读取，
+    不在这里重复保存，避免同一份状态出现两份不一致的副本。
+    """
+
+    __tablename__ = "process_usage_record"
+    __table_args__ = (
+        # 一个审批实例只属于一个租户。
+        UniqueConstraint(
+            "approval_instance_id",
+            name="uq_process_usage_record_instance",
+        ),
+        # 同一租户对同一流程下的同一业务单据只允许发起一次审批。
+        UniqueConstraint(
+            "tenant_id",
+            "process_id",
+            "business_key",
+            name="uq_process_usage_record_business_key",
+        ),
+        {"schema": TENANT_DB_SCHEMA},
+    )
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    tenant_id: UUID = Field(foreign_key="tenant.tenant.id", index=True)
+    process_id: UUID = Field(index=True)
+    process_version_id: UUID
+    approval_instance_id: UUID = Field(index=True)
+    business_key: str = Field(max_length=200, index=True)
+    # 审批通过后需要执行的业务动作，为空表示只完成审批不触发业务执行。
+    action_code: Optional[str] = Field(default=None, max_length=100, index=True)
+    created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))

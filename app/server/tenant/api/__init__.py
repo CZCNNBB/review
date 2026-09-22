@@ -3,7 +3,9 @@
 from fastapi import APIRouter
 
 from app.server.tenant.api.tenant_api import router as tenant_router
+from app.server.tenant.api.tenant_binding_api import router as tenant_binding_router
 
 
 router = APIRouter()
 router.include_router(tenant_router)
+router.include_router(tenant_binding_router)

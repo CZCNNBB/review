@@ -1,6 +1,7 @@
 """审批实例发起、详情和时间线业务逻辑。"""
 
 from dataclasses import dataclass
+from datetime import datetime
 from uuid import UUID
 
 from sqlalchemy.exc import IntegrityError
@@ -68,6 +69,21 @@ class InstanceDetailView:
     records: tuple[ApprovalRecord, ...]
 
 
+@dataclass(frozen=True)
+class InstanceOverview:
+    """审批实例的运行摘要，供租户使用记录列表组装展示信息。
+
+    这些字段统一从 process 运行表读取，不在 tenant.process_usage_record 中重复保存。
+    """
+
+    instance_id: UUID
+    status: str
+    title: str
+    current_node_name: str | None
+    started_at: datetime | None
+    finished_at: datetime | None
+
+
 class ApprovalInstanceService:
     """提供发起审批、审批详情和运行时间线查询能力。"""
 
@@ -97,17 +113,45 @@ class ApprovalInstanceService:
         process_id: UUID,
         request: ApprovalStartRequest,
         db: Session,
+        tenant_id: UUID | None = None,
     ) -> StartedInstance:
-        """按流程当前已发布版本创建审批实例并推进到首个等待节点。
+        """创建并推进审批实例，然后提交本次事务。
+
+        适用于不需要把审批实例和其他模块数据放在同一事务里的调用方。业务接入接口
+        需要把租户使用记录和审批实例原子提交，改用 create_and_start_instance 后由
+        最外层应用服务统一提交。
+        """
+
+        started = self.create_and_start_instance(
+            process_id=process_id,
+            request=request,
+            db=db,
+            tenant_id=tenant_id,
+        )
+        db.commit()
+        return started
+
+    def create_and_start_instance(
+        self,
+        process_id: UUID,
+        request: ApprovalStartRequest,
+        db: Session,
+        tenant_id: UUID | None = None,
+    ) -> StartedInstance:
+        """按流程当前已发布版本创建审批实例并推进到首个等待节点，但不提交事务。
 
         业务系统只传 process_id，版本在发起时确定并与实例绑定，之后发布新版本不会
         影响本次审批。相同幂等键且请求内容一致的重复请求返回原审批实例，内容变化
         时返回冲突，避免新的审批数据被静默忽略。
+
+        方法内只执行添加、flush 和流程推进，调用方必须在同一事务中补齐其他模块的
+        数据后再提交，否则会产生无法按租户查询的孤立审批实例。
         """
 
         idempotency_key = build_idempotency_key(
             process_id=process_id,
             business_key=request.business_key,
+            tenant_id=tenant_id,
         )
         request_digest = build_request_digest(self._build_request_payload(request))
 
@@ -160,9 +204,9 @@ class ApprovalInstanceService:
         self.repository.add_instance(instance, db)
 
         try:
-            # 实例、首条节点执行记录和首批审批任务必须在同一个事务中提交。
+            # 实例、首条节点执行记录和首批审批任务在同一个事务中写入，此处只 flush。
             self.engine.start_instance(instance, graph, db)
-            db.commit()
+            db.flush()
         except IntegrityError as exc:
             db.rollback()
             # 并发提交相同幂等键时由唯一约束决出胜负，失败的一方返回已有实例。
@@ -185,9 +229,86 @@ class ApprovalInstanceService:
         db.refresh(instance)
         return self._build_started(instance, db, idempotent_replay=False)
 
+    def resolve_idempotent_instance(
+        self,
+        process_id: UUID,
+        request: ApprovalStartRequest,
+        db: Session,
+        tenant_id: UUID | None = None,
+    ) -> StartedInstance | None:
+        """按幂等键读取已经存在的审批实例，供并发冲突后返回幂等重放结果。
+
+        调用方在租户使用记录写入冲突并回滚后调用本方法：此时获胜的请求已经提交了
+        实例和使用记录，这里重新读取并比对请求摘要。内容不一致时仍然返回 409。
+        """
+
+        idempotency_key = build_idempotency_key(
+            process_id=process_id,
+            business_key=request.business_key,
+            tenant_id=tenant_id,
+        )
+        existing_instance = self.repository.get_instance_by_idempotency_key(
+            idempotency_key,
+            db,
+        )
+        if existing_instance is None:
+            return None
+
+        request_digest = build_request_digest(self._build_request_payload(request))
+        self._ensure_same_request(existing_instance, request_digest)
+        return self._build_started(existing_instance, db, idempotent_replay=True)
+
     # ------------------------------------------------------------------
     # 查询
     # ------------------------------------------------------------------
+
+    def list_instance_overviews(
+        self,
+        instance_ids: list[UUID],
+        db: Session,
+    ) -> dict[UUID, InstanceOverview]:
+        """批量读取审批实例运行摘要，供租户使用记录列表组装展示信息。
+
+        运行状态只从 process 运行表读取，不在租户使用记录中重复保存，避免同一份
+        状态出现两份不一致的副本。
+        """
+
+        unique_instance_ids = list(dict.fromkeys(instance_ids))
+        if not unique_instance_ids:
+            return {}
+
+        instances = self.repository.list_instances_by_ids(unique_instance_ids, db)
+
+        # 一次性读取全部当前节点执行记录，避免逐条实例查询节点名称。
+        current_execution_ids = [
+            instance.current_node_execution_id
+            for instance in instances
+            if instance.current_node_execution_id is not None
+        ]
+        executions = self.repository.list_node_executions_by_ids(
+            current_execution_ids,
+            db,
+        )
+        node_name_by_execution_id = {
+            execution.id: execution.node_name for execution in executions
+        }
+
+        overviews: dict[UUID, InstanceOverview] = {}
+        for instance in instances:
+            current_node_name = None
+            if instance.current_node_execution_id is not None:
+                current_node_name = node_name_by_execution_id.get(
+                    instance.current_node_execution_id
+                )
+            overviews[instance.id] = InstanceOverview(
+                instance_id=instance.id,
+                status=instance.status,
+                title=instance.title,
+                current_node_name=current_node_name,
+                started_at=instance.started_at,
+                finished_at=instance.finished_at,
+            )
+        return overviews
 
     def get_instance_view(self, instance_id: UUID, db: Session) -> InstanceDetailView:
         """读取审批实例的完整运行数据，供详情和时间线接口使用。"""

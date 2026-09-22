@@ -2,8 +2,13 @@
 
 覆盖发起审批、审批详情、运行时间线、待办查询、同意和拒绝六个接口，以及 403、
 404、409 和 422 四类错误响应。流程定义通过 Service 准备，接口测试只关注运行层。
+
+本文件固定使用全局模式：审批运行接口本身不依赖租户能力，发起审批也不需要 API Key
+和流程授权，只校验流程、表单、业务动作和执行参数。租户模式下的完整链路由
+`test_business_access_api.py` 覆盖。
 """
 
+import os
 import time
 import unittest
 from typing import Any
@@ -14,6 +19,12 @@ from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
 from app.main import create_app
+from app.server.integration.src.schemas.business_action_schema import (
+    BusinessActionCreateRequest,
+)
+from app.server.integration.src.service.business_action_service import (
+    BusinessActionService,
+)
 from app.server.organization.src.schemas.organization_schema import PersonCreateRequest
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.process.src.constants import (
@@ -38,6 +49,10 @@ from tests.process_test_helpers import (
 )
 
 
+# 全局模式下的业务动作标识，发起审批时用它验证执行参数链路。
+PAYMENT_ACTION_CODE = "PAYMENT_EXECUTE"
+
+
 class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
     """验证审批运行接口的完整链路和错误响应。"""
 
@@ -48,9 +63,14 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.process_service = ProcessService()
         self.seed = load_seed_node_definitions()
 
+        # 运行接口不依赖租户能力，这里显式关闭租户开关覆盖全局模式。
+        self.previous_tenancy_enabled = os.environ.get("TENANCY_ENABLED")
+        os.environ["TENANCY_ENABLED"] = "false"
+
         self.applicant_id = self.create_person("接口发起人")
         self.approver_a = self.create_person("接口审批人A")
         self.approver_b = self.create_person("接口审批人B")
+        self.create_payment_action()
 
         app = create_app()
 
@@ -64,9 +84,13 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.client = TestClient(app)
 
     def tearDown(self) -> None:
-        """关闭客户端并清理测试数据。"""
+        """关闭客户端并恢复环境变量后清理测试数据。"""
 
         self.client.close()
+        if self.previous_tenancy_enabled is None:
+            os.environ.pop("TENANCY_ENABLED", None)
+        else:
+            os.environ["TENANCY_ENABLED"] = self.previous_tenancy_enabled
         self.close_session()
 
     # ------------------------------------------------------------------
@@ -81,6 +105,25 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             self.db,
         )
         return self.track_person(person.id)
+
+    def create_payment_action(self) -> UUID:
+        """创建发起审批时使用的业务动作并登记清理。"""
+
+        action = BusinessActionService().create_action(
+            BusinessActionCreateRequest(
+                action_code=PAYMENT_ACTION_CODE,
+                name="执行付款",
+                relative_path="/payments/execute",
+                request_schema_json={
+                    "type": "object",
+                    "required": ["payment_id"],
+                    "properties": {"payment_id": {"type": "string", "minLength": 1}},
+                    "additionalProperties": False,
+                },
+            ),
+            self.db,
+        )
+        return self.track_business_action(action.id)
 
     def publish_linear_process(
         self,
@@ -166,7 +209,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 "business_key": business_key or f"BIZ-{uuid4().hex[:8]}",
                 "title": "供应商付款申请",
                 "applicant_person_id": str(self.applicant_id),
-                "action_code": "PAYMENT_EXECUTE",
+                "action_code": PAYMENT_ACTION_CODE,
                 "approval_form": approval_form or {},
                 "execution_payload": {"payment_id": "PAY-001"},
             },
@@ -218,7 +261,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         detail = detail_response.json()["data"]
         self.assertEqual(detail["business_key"], "BIZ-API-001")
         self.assertEqual(detail["title"], "供应商付款申请")
-        self.assertEqual(detail["action_code"], "PAYMENT_EXECUTE")
+        self.assertEqual(detail["action_code"], PAYMENT_ACTION_CODE)
         self.assertEqual(detail["current_node"]["node_name"], "财务审批")
         self.assertEqual(
             [execution["node_type"] for execution in detail["node_executions"]],
@@ -279,7 +322,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 "business_key": business_key,
                 "title": "供应商付款申请",
                 "applicant_person_id": str(self.applicant_id),
-                "action_code": "PAYMENT_EXECUTE",
+                "action_code": PAYMENT_ACTION_CODE,
                 "approval_form": {"amount": 999},
                 "execution_payload": {"payment_id": "PAY-001"},
             },

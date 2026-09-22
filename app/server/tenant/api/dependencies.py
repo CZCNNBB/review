@@ -11,6 +11,10 @@ from sqlmodel import Session
 from app.common.db.postgres_db import get_postgres_engine
 from app.common.scope import ResourceScope
 from app.common.security import verify_admin_key
+from app.server.tenant.src.scope.business_access import (
+    BusinessAccessContext,
+    create_business_access_context,
+)
 from app.server.tenant.src.scope.tenant_scope import (
     TenantResourceAccessError,
     create_resource_scope,
@@ -85,6 +89,30 @@ def use_tenant_scope(resource_type: str) -> DependsParameter:
     return Depends(build_resource_scope_dependency(resource_type))
 
 
+def get_business_access_context(
+    x_api_key: str | None = Header(default=None, alias="X-API-Key"),
+    db: Session = Depends(get_postgres_engine),
+) -> BusinessAccessContext:
+    """构造业务接入接口使用的租户上下文。
+
+    一个请求只在这里认证一次 API Key，流程、业务动作和使用记录三类作用域共用同一次
+    认证结果，避免重复校验 API Key 和重复更新最近使用时间。关闭租户能力时既不要求
+    API Key，也不会查询任何 tenant 表。
+    """
+
+    if not is_tenancy_enabled():
+        return create_business_access_context(tenant_id=None)
+
+    tenant_context = get_tenant_context(x_api_key=x_api_key, db=db)
+    return create_business_access_context(tenant_id=tenant_context.tenant_id)
+
+
+def use_business_access_context() -> DependsParameter:
+    """返回可直接声明在业务接入 API 参数上的上下文依赖。"""
+
+    return Depends(get_business_access_context)
+
+
 def build_tenant_access_dependency(
     resource_type: str,
     resource_id_param: str,
@@ -140,11 +168,14 @@ def require_tenant_access(
 
 
 __all__ = [
+    "BusinessAccessContext",
     "TenantAuthContext",
     "build_tenant_access_dependency",
     "build_resource_scope_dependency",
+    "get_business_access_context",
     "get_tenant_context",
     "require_tenant_access",
+    "use_business_access_context",
     "use_tenant_scope",
     "verify_admin_key",
 ]

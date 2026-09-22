@@ -136,10 +136,77 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertIn("RAISE EXCEPTION", migration_content)
         self.assertIn("DROP TABLE IF EXISTS process.approval_process_node", migration_content)
 
-    def test_process_binding_table_is_not_created_yet(self) -> None:
-        """租户流程授权表推迟到租户模块实现，本次不建表。"""
+    def test_business_access_tables_are_declared(self) -> None:
+        """业务接入模块的四张表已建好，且不再另建含义重复的实例绑定表。"""
 
-        self.assertNotIn("tenant.process_binding", self.sql_content)
+        for table_name in (
+            "tenant.process_binding",
+            "tenant.business_action_binding",
+            "tenant.process_usage_record",
+            "integration.business_action",
+        ):
+            self.assertIn(f"CREATE TABLE IF NOT EXISTS {table_name}", self.sql_content)
+
+        self.assertNotIn("approval_instance_binding", self.sql_content)
+
+    def test_business_access_tables_and_columns_have_comments(self) -> None:
+        """业务接入表和它自己的字段都带注释。"""
+
+        for table_name in (
+            "tenant.process_binding",
+            "tenant.business_action_binding",
+            "tenant.process_usage_record",
+            "integration.business_action",
+        ):
+            self.assertIn(f"COMMENT ON TABLE {table_name} IS", self.sql_content)
+            self.assertIn(f"COMMENT ON COLUMN {table_name}.id IS", self.sql_content)
+
+    def test_business_access_unique_constraints_are_declared(self) -> None:
+        """幂等和授权唯一性由数据库约束兜住，不只依赖代码查询。"""
+
+        self.assertIn("UNIQUE (tenant_id, process_id)", self.sql_content)
+        self.assertIn("UNIQUE (tenant_id, business_action_id)", self.sql_content)
+        self.assertIn("UNIQUE (approval_instance_id)", self.sql_content)
+        self.assertIn("UNIQUE (tenant_id, process_id, business_key)", self.sql_content)
+        self.assertIn("UNIQUE (action_code)", self.sql_content)
+
+    def test_business_access_status_columns_have_check_constraints(self) -> None:
+        """授权状态、动作状态和调用方法都由数据库 CHECK 约束限制取值。"""
+
+        for constraint_name in (
+            "ck_process_binding_status",
+            "ck_business_action_binding_status",
+            "ck_business_action_status",
+            "ck_business_action_http_method",
+        ):
+            self.assertIn(constraint_name, self.sql_content)
+
+    def test_business_access_tables_do_not_reference_other_schemas(self) -> None:
+        """跨 Schema 的业务资源 ID 不建立外键，tenant Schema 可以独立移除。"""
+
+        # 授权和使用记录表只允许对 tenant.tenant 建立外键。
+        for table_name, foreign_key_name in (
+            ("tenant.process_binding", "fk_process_binding_tenant"),
+            (
+                "tenant.business_action_binding",
+                "fk_business_action_binding_tenant",
+            ),
+            ("tenant.process_usage_record", "fk_process_usage_record_tenant"),
+        ):
+            table_start = self.sql_content.index(
+                f"CREATE TABLE IF NOT EXISTS {table_name}"
+            )
+            table_end = self.sql_content.index(";", table_start)
+            table_definition = self.sql_content[table_start:table_end]
+            self.assertIn(foreign_key_name, table_definition)
+            self.assertNotIn("REFERENCES process.", table_definition)
+            self.assertNotIn("REFERENCES integration.", table_definition)
+
+    def test_business_action_relative_path_has_safety_check(self) -> None:
+        """相对路径由数据库兜底拒绝完整 URL 和协议相对地址。"""
+
+        self.assertIn("ck_business_action_relative_path", self.sql_content)
+        self.assertIn("relative_path NOT LIKE '%://%'", self.sql_content)
 
     def test_seed_node_definitions_are_complete(self) -> None:
         """seed 注册了 START、APPROVAL、END 三种节点能力。"""

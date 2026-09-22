@@ -45,6 +45,7 @@ class OrganizationServiceTestCase(unittest.TestCase):
                     "tenant": None,
                     "organization": None,
                     "process": None,
+                    "integration": None,
                 }
             },
         )

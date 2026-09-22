@@ -17,6 +17,14 @@ class CredentialNotFoundError(TenantServiceError):
     """指定凭据不存在。"""
 
 
+class TenantBindingNotFoundError(TenantServiceError):
+    """租户业务接入授权或审批使用记录不存在。"""
+
+
+class TenantBindingConflictError(TenantServiceError):
+    """租户业务接入授权发生唯一性冲突。"""
+
+
 class InvalidApiKeyError(TenantServiceError):
     """API Key 无效、失效或不允许访问。"""
 

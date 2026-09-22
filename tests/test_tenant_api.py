@@ -32,6 +32,7 @@ class TenantApiTestCase(unittest.TestCase):
                     "tenant": None,
                     "organization": None,
                     "process": None,
+                    "integration": None,
                 }
             },
         )

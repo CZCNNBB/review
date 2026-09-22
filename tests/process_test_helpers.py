@@ -94,6 +94,8 @@ class DatabaseTestCaseMixin:
         self._created_process_ids: list[UUID] = []
         self._created_node_definition_ids: list[UUID] = []
         self._created_person_ids: list[UUID] = []
+        self._created_tenant_ids: list[UUID] = []
+        self._created_business_action_ids: list[UUID] = []
         return self._session
 
     def close_session(self) -> None:
@@ -120,6 +122,38 @@ class DatabaseTestCaseMixin:
             "SELECT id FROM process.approval_instance WHERE process_id = ANY(:ids)"
         )
         cleanup_groups: list[tuple[str, str, dict[str, list[UUID]] | None]] = [
+            # 租户侧数据先删除，避免删除租户后留下引用该租户的授权记录和使用记录。
+            (
+                "审批使用记录",
+                "DELETE FROM tenant.process_usage_record WHERE tenant_id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
+                "业务动作授权",
+                "DELETE FROM tenant.business_action_binding "
+                "WHERE tenant_id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
+                "流程授权",
+                "DELETE FROM tenant.process_binding WHERE tenant_id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
+                "租户 API Key",
+                "DELETE FROM tenant.tenant_api_key WHERE tenant_id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
+                "租户",
+                "DELETE FROM tenant.tenant WHERE id = ANY(:ids)",
+                {"ids": self._created_tenant_ids},
+            ),
+            (
+                "业务动作",
+                "DELETE FROM integration.business_action WHERE id = ANY(:ids)",
+                {"ids": self._created_business_action_ids},
+            ),
             (
                 "清空流程当前版本引用",
                 "UPDATE process.approval_process SET current_version_id = NULL "
@@ -217,3 +251,15 @@ class DatabaseTestCaseMixin:
 
         self._created_person_ids.append(person_id)
         return person_id
+
+    def track_tenant(self, tenant_id: UUID) -> UUID:
+        """登记测试创建的租户，供清理阶段定点删除租户侧全部数据。"""
+
+        self._created_tenant_ids.append(tenant_id)
+        return tenant_id
+
+    def track_business_action(self, business_action_id: UUID) -> UUID:
+        """登记测试创建的业务动作，供清理阶段定点删除。"""
+
+        self._created_business_action_ids.append(business_action_id)
+        return business_action_id

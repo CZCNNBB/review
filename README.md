@@ -14,6 +14,8 @@
 - `app/server/process/docs/审批流模块设计.md`：节点能力、流程编排、审批人和租户使用权设计。
 - `app/server/process/docs/审批流运行模块设计.md`：显式版本、审批实例、节点执行、任务和审批记录设计。
 - `app/server/process/docs/README.md`：审批流维护模块的实现说明，包含种子节点定义、校验规则码和 JSON 字段写入约束。
+- `app/server/integration/docs/业务接入模块设计.md`：业务动作、租户授权、审批使用记录和发起审批事务设计。
+- `app/server/integration/docs/业务接入接口说明.md`：业务接入接口清单、API Key 使用方式、错误码和联调步骤。
 - 其他模块的设计文档统一存放在各自 `app/server/<module>/docs/` 下。
 
 ## 项目结构
@@ -220,18 +222,56 @@ GET  /api/approval-instances/{instance_id}/timeline
 GET  /api/approval-tasks
 POST /api/approval-tasks/{task_id}/approve
 POST /api/approval-tasks/{task_id}/reject
+POST /api/admin/business-actions
+GET  /api/admin/business-actions
+GET  /api/admin/business-actions/{action_id}
+PATCH /api/admin/business-actions/{action_id}
+POST /api/admin/tenants/{tenant_id}/process-bindings
+GET  /api/admin/tenants/{tenant_id}/process-bindings
+PATCH /api/admin/tenants/{tenant_id}/process-bindings/{binding_id}
+POST /api/admin/tenants/{tenant_id}/business-action-bindings
+GET  /api/admin/tenants/{tenant_id}/business-action-bindings
+PATCH /api/admin/tenants/{tenant_id}/business-action-bindings/{binding_id}
+GET  /api/admin/tenants/{tenant_id}/process-usage-records
+GET  /api/admin/tenants/{tenant_id}/process-usage-records/{record_id}
 ```
 
-`/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
+`/api/admin/*` 使用 `X-Admin-Key`；`/api/tenant/context` 和发起审批使用租户的 `X-API-Key`。后续业务 API 可通过 `use_tenant_scope(resource_type)` 自动完成 API Key 认证和租户资源过滤；关闭 `TENANCY_ENABLED` 后，同一依赖会返回全局作用域。
 
-审批运行接口暂未接入认证：接入项目平台登录身份前，任务查询和审批请求显式传递 `person_id`，发起审批在请求体中传递 `applicant_person_id`。租户流程授权落地后，发起审批会改为通过 `X-API-Key` 确定租户身份并校验流程绑定。
+### 业务系统发起审批
+
+业务系统使用租户 API Key 调用发起接口，`tenant_id` 不由请求体传入：
+
+```text
+POST /api/processes/{process_id}/instances
+X-API-Key: appr_live_xxx
+```
+
+```json
+{
+  "business_key": "PAY-20260921-001",
+  "title": "供应商付款申请",
+  "applicant_person_id": "人员UUID",
+  "action_code": "PAYMENT_EXECUTE",
+  "approval_form": { "amount": 10000 },
+  "execution_payload": { "payment_id": "PAY-20260921-001", "amount": 10000 }
+}
+```
+
+启用租户能力时，请求会依次校验 API Key、租户状态、流程授权、业务动作授权和执行参数，
+并在同一个事务中提交审批实例、首批任务和租户使用记录。`action_code` 为空表示只完成审批
+不触发业务执行。`TENANCY_ENABLED=false` 时不要求 API Key，也不写入租户使用记录。
+
+完整接口清单、错误码和联调步骤见
+`app/server/integration/docs/业务接入接口说明.md`。
+
+审批运行接口暂未接入认证：接入项目平台登录身份前，任务查询和审批请求显式传递 `person_id`，发起审批在请求体中传递 `applicant_person_id`。
 
 ## 后续模块规划
 
 ```text
-server/integration 业务动作与接入配置
-server/process   流程版本、审批实例、节点执行、任务与操作记录
 server/callback   业务动作回调与执行记录
 ```
 
-当前先保持单体部署，按模块边界逐步实现。
+`server/integration` 和 `server/process` 的第一版已经落地：业务动作定义与参数规则在
+`integration`，审批流定义和运行在 `process`。当前先保持单体部署，按模块边界逐步实现。

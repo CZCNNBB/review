@@ -14,6 +14,7 @@ import app.bootstrap  # 初始化异步环境，必须在其他项目模块之�
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from app.server.integration.api import router as integration_router
 from app.server.organization.api import router as organization_router
 from app.server.process.api import router as process_router
 from app.server.tenant.api import router as tenant_router
@@ -39,6 +40,7 @@ def create_app() -> FastAPI:
     app.include_router(tenant_router, prefix="/api", tags=["租户模块"])
     app.include_router(organization_router, prefix="/api", tags=["人员与组织模块"])
     app.include_router(process_router, prefix="/api", tags=["审批流维护模块"])
+    app.include_router(integration_router, prefix="/api", tags=["业务接入模块"])
     
     @app.get("/")
     def root_endpoint():

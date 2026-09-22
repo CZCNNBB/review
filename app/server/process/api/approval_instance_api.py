@@ -7,6 +7,15 @@ from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
 from app.common.schemas.result import Result
+from app.server.integration.api import raise_business_access_http_error
+from app.server.integration.src.service.business_access_service import (
+    BusinessAccessService,
+)
+from app.server.integration.src.service.exceptions import (
+    BusinessActionNotFoundError,
+    BusinessActionStateError,
+    BusinessActionValidationError,
+)
 from app.server.process.api.approval_view_builder import (
     build_node_execution_response,
     build_node_name_index,
@@ -38,10 +47,16 @@ from app.server.process.src.service.exceptions import (
     ProcessValidationError,
 )
 from app.server.process.src.utils.duration import elapsed_ms
+from app.server.tenant.api.dependencies import (
+    BusinessAccessContext,
+    use_business_access_context,
+)
+from app.server.tenant.src.scope.tenant_scope import TenantResourceAccessError
 
 
 router = APIRouter()
 approval_instance_service = ApprovalInstanceService()
+business_access_service = BusinessAccessService()
 
 
 def build_started_response(started: StartedInstance) -> ApprovalInstanceStartedResponse:
@@ -179,6 +194,21 @@ def build_timeline_response(view: InstanceDetailView) -> ApprovalTimelineRespons
     )
 
 
+def get_accessible_instance_view(
+    instance_id: UUID,
+    context: BusinessAccessContext,
+    db: Session,
+) -> InstanceDetailView:
+    """校验当前租户对审批实例的访问权，并读取完整运行视图。
+
+    租户模式通过审批使用记录判断实例归属，因此流程授权后续被停用时，已经创建的
+    审批实例仍然可以继续查看。全局模式使用空操作作用域，不额外限制实例查询。
+    """
+
+    context.instance_scope.require_access(instance_id, db)
+    return approval_instance_service.get_instance_view(instance_id, db)
+
+
 @router.post(
     "/processes/{process_id}/instances",
     response_model=Result[ApprovalInstanceStartedResponse],
@@ -188,16 +218,22 @@ def build_timeline_response(view: InstanceDetailView) -> ApprovalTimelineRespons
 def start_approval_instance(
     process_id: UUID,
     request: ApprovalStartRequest,
+    context: BusinessAccessContext = use_business_access_context(),
     db: Session = Depends(get_postgres_engine),
 ) -> Result[ApprovalInstanceStartedResponse]:
     """按流程当前已发布版本创建审批实例。
 
-    业务系统只传 process_id 和业务数据，版本由审批中心自动确定。相同幂等键重复
-    发起时返回原审批实例。
+    业务系统只传 process_id 和业务数据，版本由审批中心自动确定，租户身份只能来自
+    X-API-Key。相同幂等键重复发起时返回原审批实例，请求内容变化时返回冲突。
     """
 
     try:
-        started = approval_instance_service.start_instance(process_id, request, db)
+        started = business_access_service.start_approval(
+            process_id,
+            request,
+            context,
+            db,
+        )
         return Result.success(build_started_response(started))
     except (
         ProcessNotFoundError,
@@ -206,6 +242,13 @@ def start_approval_instance(
         ProcessValidationError,
     ) as exc:
         raise_process_http_error(exc)
+    except (
+        TenantResourceAccessError,
+        BusinessActionNotFoundError,
+        BusinessActionStateError,
+        BusinessActionValidationError,
+    ) as exc:
+        raise_business_access_http_error(exc)
 
 
 @router.get(
@@ -215,15 +258,18 @@ def start_approval_instance(
 )
 def get_approval_instance(
     instance_id: UUID,
+    context: BusinessAccessContext = use_business_access_context(),
     db: Session = Depends(get_postgres_engine),
 ) -> Result[ApprovalInstanceDetailResponse]:
     """查询审批实例的当前状态、节点耗时和处理过程。"""
 
     try:
-        view = approval_instance_service.get_instance_view(instance_id, db)
+        view = get_accessible_instance_view(instance_id, context, db)
         return Result.success(build_detail_response(view))
     except ApprovalNotFoundError as exc:
         raise_process_http_error(exc)
+    except TenantResourceAccessError as exc:
+        raise_business_access_http_error(exc)
 
 
 @router.get(
@@ -233,12 +279,15 @@ def get_approval_instance(
 )
 def get_approval_instance_timeline(
     instance_id: UUID,
+    context: BusinessAccessContext = use_business_access_context(),
     db: Session = Depends(get_postgres_engine),
 ) -> Result[ApprovalTimelineResponse]:
     """按实际执行顺序返回经过的节点、任务和审批记录。"""
 
     try:
-        view = approval_instance_service.get_instance_view(instance_id, db)
+        view = get_accessible_instance_view(instance_id, context, db)
         return Result.success(build_timeline_response(view))
     except ApprovalNotFoundError as exc:
         raise_process_http_error(exc)
+    except TenantResourceAccessError as exc:
+        raise_business_access_http_error(exc)

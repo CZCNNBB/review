@@ -68,6 +68,100 @@ CREATE UNIQUE INDEX IF NOT EXISTS ix_tenant_tenant_callback_credential_key_id
 CREATE INDEX IF NOT EXISTS ix_tenant_tenant_callback_credential_status
     ON tenant.tenant_callback_credential (status);
 
+-- ============================================================================
+-- 租户业务接入绑定表：流程授权、业务动作授权和审批使用记录。
+-- 三张表只保存租户与业务资源的归属关系，业务资源 ID 不建立跨 Schema 外键，
+-- 删除 tenant Schema 后 process 和 integration 模块仍然可以独立运行。
+-- ============================================================================
+
+-- 流程授权只表达租户可以使用哪条审批流，不保存流程版本、节点或审批人配置。
+CREATE TABLE IF NOT EXISTS tenant.process_binding (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    process_id UUID NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_process_binding_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenant.tenant (id),
+    CONSTRAINT uq_process_binding_resource
+        UNIQUE (tenant_id, process_id),
+    CONSTRAINT ck_process_binding_status
+        CHECK (status IN ('ENABLED', 'DISABLED'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_binding_tenant_id
+    ON tenant.process_binding (tenant_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_binding_process_id
+    ON tenant.process_binding (process_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_binding_status
+    ON tenant.process_binding (status);
+
+-- 业务动作授权只控制租户能否使用某个动作，动作的接口配置仍保存在 integration Schema。
+CREATE TABLE IF NOT EXISTS tenant.business_action_binding (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    business_action_id UUID NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_business_action_binding_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenant.tenant (id),
+    CONSTRAINT uq_business_action_binding_resource
+        UNIQUE (tenant_id, business_action_id),
+    CONSTRAINT ck_business_action_binding_status
+        CHECK (status IN ('ENABLED', 'DISABLED'))
+);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_business_action_binding_tenant_id
+    ON tenant.business_action_binding (tenant_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_business_action_binding_action_id
+    ON tenant.business_action_binding (business_action_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_business_action_binding_status
+    ON tenant.business_action_binding (status);
+
+-- 使用记录保存某租户实际发起过某次审批的事实，同时作为按租户查询审批实例的入口。
+-- 该表只保存归属和关联信息，不重复保存审批状态、当前节点和耗时，这些数据统一从
+-- process 运行表读取，避免同一份状态出现两份不一致的副本。
+CREATE TABLE IF NOT EXISTS tenant.process_usage_record (
+    id UUID PRIMARY KEY,
+    tenant_id UUID NOT NULL,
+    process_id UUID NOT NULL,
+    process_version_id UUID NOT NULL,
+    approval_instance_id UUID NOT NULL,
+    business_key VARCHAR(200) NOT NULL,
+    action_code VARCHAR(100),
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT fk_process_usage_record_tenant
+        FOREIGN KEY (tenant_id) REFERENCES tenant.tenant (id),
+    CONSTRAINT uq_process_usage_record_instance
+        UNIQUE (approval_instance_id),
+    CONSTRAINT uq_process_usage_record_business_key
+        UNIQUE (tenant_id, process_id, business_key)
+);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_tenant_id
+    ON tenant.process_usage_record (tenant_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_process_id
+    ON tenant.process_usage_record (process_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_instance_id
+    ON tenant.process_usage_record (approval_instance_id);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_business_key
+    ON tenant.process_usage_record (business_key);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_action_code
+    ON tenant.process_usage_record (action_code);
+
+CREATE INDEX IF NOT EXISTS ix_tenant_process_usage_record_created_at
+    ON tenant.process_usage_record (created_at);
+
 -- 人员绑定不引用 organization Schema，tenant Schema 可以独立移除。
 CREATE TABLE IF NOT EXISTS tenant.person_binding (
     id UUID PRIMARY KEY,
@@ -455,6 +549,55 @@ CREATE INDEX IF NOT EXISTS ix_process_approval_record_operator_person_id
 CREATE INDEX IF NOT EXISTS ix_process_approval_record_action
     ON process.approval_record (action);
 
+-- ============================================================================
+-- 业务接入表：审批通过后可以执行的一类业务动作及其参数规则。
+-- 业务动作不保存 tenant_id，租户能否使用某个动作由 tenant.business_action_binding 决定。
+-- 本模块只定义动作和校验参数，不执行任何外部 HTTP 请求。
+-- ============================================================================
+
+CREATE SCHEMA IF NOT EXISTS integration;
+
+-- 业务动作使用稳定的 action_code，与审批流相互独立，同一个动作可以被多条审批流使用。
+CREATE TABLE IF NOT EXISTS integration.business_action (
+    id UUID PRIMARY KEY,
+    action_code VARCHAR(100) NOT NULL,
+    name VARCHAR(128) NOT NULL,
+    description VARCHAR(500),
+    http_method VARCHAR(10) NOT NULL,
+    relative_path VARCHAR(500) NOT NULL,
+    request_schema_json JSONB NOT NULL,
+    success_status_codes_json JSONB NOT NULL,
+    timeout_ms INTEGER NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    updated_at TIMESTAMP WITH TIME ZONE NOT NULL,
+    CONSTRAINT uq_business_action_code
+        UNIQUE (action_code),
+    CONSTRAINT ck_business_action_http_method
+        CHECK (http_method IN ('POST', 'PUT', 'PATCH')),
+    CONSTRAINT ck_business_action_status
+        CHECK (status IN ('ENABLED', 'DISABLED')),
+    CONSTRAINT ck_business_action_timeout_positive
+        CHECK (timeout_ms > 0),
+    -- 相对路径必须以单个斜杠开头，且不能保存完整 URL 或协议相对地址，
+    -- 保证最终地址只能由租户 callback_base_url 和本字段拼接得到。
+    CONSTRAINT ck_business_action_relative_path
+        CHECK (
+            relative_path LIKE '/%'
+            AND relative_path NOT LIKE '//%'
+            AND relative_path NOT LIKE '%://%'
+        )
+);
+
+CREATE INDEX IF NOT EXISTS ix_integration_business_action_action_code
+    ON integration.business_action (action_code);
+
+CREATE INDEX IF NOT EXISTS ix_integration_business_action_status
+    ON integration.business_action (status);
+
+CREATE INDEX IF NOT EXISTS ix_integration_business_action_name
+    ON integration.business_action (name);
+
 -- 第一批节点能力定义使用固定 UUID，方便前端画布和联调环境稳定引用。
 -- 语句内部不允许出现分号，初始化脚本会按分号拆分后逐条执行。
 INSERT INTO process.node_definition (
@@ -571,6 +714,7 @@ ON CONFLICT (id) DO NOTHING;
 COMMENT ON SCHEMA tenant IS '租户、业务系统凭据及租户资源绑定数据';
 COMMENT ON SCHEMA organization IS '审批中心全局人员、部门及部门成员数据';
 COMMENT ON SCHEMA process IS '审批流定义、显式版本和后续审批运行数据';
+COMMENT ON SCHEMA integration IS '业务动作定义、请求参数规则及调用配置';
 
 COMMENT ON TABLE tenant.tenant IS '接入审批中心的业务系统租户';
 COMMENT ON COLUMN tenant.tenant.id IS '租户主键 ID';
@@ -605,6 +749,32 @@ COMMENT ON COLUMN tenant.tenant_callback_credential.expires_at IS '过期时间�
 COMMENT ON COLUMN tenant.tenant_callback_credential.created_at IS '创建时间';
 COMMENT ON COLUMN tenant.tenant_callback_credential.revoked_at IS '撤销时间';
 COMMENT ON COLUMN tenant.tenant_callback_credential.created_by IS '创建操作人 ID，初期允许为空';
+
+COMMENT ON TABLE tenant.process_binding IS '租户可以使用的审批流授权';
+COMMENT ON COLUMN tenant.process_binding.id IS '流程授权主键 ID';
+COMMENT ON COLUMN tenant.process_binding.tenant_id IS '所属租户 ID';
+COMMENT ON COLUMN tenant.process_binding.process_id IS '关联的 process.approval_process ID，不建立跨 Schema 外键';
+COMMENT ON COLUMN tenant.process_binding.status IS '授权状态：ENABLED 或 DISABLED，停用后不能新发起审批';
+COMMENT ON COLUMN tenant.process_binding.created_at IS '创建时间';
+COMMENT ON COLUMN tenant.process_binding.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE tenant.business_action_binding IS '租户可以使用的业务动作授权';
+COMMENT ON COLUMN tenant.business_action_binding.id IS '业务动作授权主键 ID';
+COMMENT ON COLUMN tenant.business_action_binding.tenant_id IS '所属租户 ID';
+COMMENT ON COLUMN tenant.business_action_binding.business_action_id IS '关联的 integration.business_action ID，不建立跨 Schema 外键';
+COMMENT ON COLUMN tenant.business_action_binding.status IS '授权状态：ENABLED 或 DISABLED，停用后不能用于新申请';
+COMMENT ON COLUMN tenant.business_action_binding.created_at IS '创建时间';
+COMMENT ON COLUMN tenant.business_action_binding.updated_at IS '最后更新时间';
+
+COMMENT ON TABLE tenant.process_usage_record IS '租户实际发起审批的使用记录，同时作为按租户查询审批实例的作用域入口';
+COMMENT ON COLUMN tenant.process_usage_record.id IS '使用记录主键 ID';
+COMMENT ON COLUMN tenant.process_usage_record.tenant_id IS '发起审批的租户 ID';
+COMMENT ON COLUMN tenant.process_usage_record.process_id IS '发起时使用的稳定流程 ID';
+COMMENT ON COLUMN tenant.process_usage_record.process_version_id IS '发起时实际绑定的流程版本 ID';
+COMMENT ON COLUMN tenant.process_usage_record.approval_instance_id IS '对应的 process.approval_instance ID，不建立跨 Schema 外键';
+COMMENT ON COLUMN tenant.process_usage_record.business_key IS '业务系统中的原单据标识，与租户和流程共同构成幂等范围';
+COMMENT ON COLUMN tenant.process_usage_record.action_code IS '审批通过后需要执行的业务动作标识，为空表示不触发业务执行';
+COMMENT ON COLUMN tenant.process_usage_record.created_at IS '审批发起时间';
 
 COMMENT ON TABLE tenant.person_binding IS '租户与全局人员的绑定关系及租户内人员扩展资料';
 COMMENT ON COLUMN tenant.person_binding.id IS '人员绑定主键 ID';
@@ -747,3 +917,17 @@ COMMENT ON COLUMN process.approval_record.operator_snapshot_json IS '操作人�
 COMMENT ON COLUMN process.approval_record.action IS '操作动作：APPROVE 或 REJECT';
 COMMENT ON COLUMN process.approval_record.comment IS '审批意见';
 COMMENT ON COLUMN process.approval_record.created_at IS '操作时间';
+
+COMMENT ON TABLE integration.business_action IS '审批通过后可以执行的一类业务动作及其参数规则';
+COMMENT ON COLUMN integration.business_action.id IS '业务动作主键 ID';
+COMMENT ON COLUMN integration.business_action.action_code IS '全局唯一、稳定的业务动作标识，由业务系统在发起审批时传入';
+COMMENT ON COLUMN integration.business_action.name IS '业务动作展示名称';
+COMMENT ON COLUMN integration.business_action.description IS '业务动作说明';
+COMMENT ON COLUMN integration.business_action.http_method IS '调用业务系统使用的 HTTP 方法：POST、PUT 或 PATCH';
+COMMENT ON COLUMN integration.business_action.relative_path IS '相对于租户 callback_base_url 的路径，必须以 / 开头且不能是完整 URL';
+COMMENT ON COLUMN integration.business_action.request_schema_json IS 'execution_payload 的 JSON Schema，根类型必须是 object';
+COMMENT ON COLUMN integration.business_action.success_status_codes_json IS '视为调用成功的 HTTP 状态码数组，为空数组表示全部 2xx';
+COMMENT ON COLUMN integration.business_action.timeout_ms IS '单次调用业务系统的超时时间，单位毫秒';
+COMMENT ON COLUMN integration.business_action.status IS '业务动作状态：ENABLED 或 DISABLED，停用后不能用于新申请';
+COMMENT ON COLUMN integration.business_action.created_at IS '创建时间';
+COMMENT ON COLUMN integration.business_action.updated_at IS '最后更新时间';

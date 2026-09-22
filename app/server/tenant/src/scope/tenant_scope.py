@@ -9,10 +9,18 @@ from sqlalchemy import exists
 from sqlmodel import Session, select
 
 from app.common.scope import GlobalResourceScope, ResourceScope
-from app.server.tenant.src.models.tenant_model import PersonBinding
+from app.server.tenant.src.models.tenant_model import (
+    BusinessActionBinding,
+    PersonBinding,
+    ProcessBinding,
+    ProcessUsageRecord,
+)
 
 
 RESOURCE_PERSON = "organization.person"
+RESOURCE_PROCESS = "process.approval_process"
+RESOURCE_BUSINESS_ACTION = "integration.business_action"
+RESOURCE_APPROVAL_INSTANCE = "process.approval_instance"
 
 
 class TenantResourceAccessError(Exception):
@@ -21,16 +29,42 @@ class TenantResourceAccessError(Exception):
 
 @dataclass(frozen=True)
 class BindingDefinition:
-    """描述一种业务资源使用的绑定模型和资源 ID 字段。"""
+    """描述一种业务资源使用的绑定模型和资源 ID 字段。
+
+    status_field 为空表示这类绑定没有启停状态，记录存在即代表资源可访问，审批使用
+    记录属于这一类。required_attribute_fields 列出建立绑定时必须由调用方补充的资源
+    特有字段，缺失时不允许写入半成品绑定。
+    """
 
     model: type
     resource_id_field: str
+    status_field: str | None = "status"
+    required_attribute_fields: tuple[str, ...] = ()
 
 
 BINDING_DEFINITIONS: dict[str, BindingDefinition] = {
     RESOURCE_PERSON: BindingDefinition(
         model=PersonBinding,
         resource_id_field="person_id",
+    ),
+    RESOURCE_PROCESS: BindingDefinition(
+        model=ProcessBinding,
+        resource_id_field="process_id",
+    ),
+    RESOURCE_BUSINESS_ACTION: BindingDefinition(
+        model=BusinessActionBinding,
+        resource_id_field="business_action_id",
+    ),
+    # 使用记录没有启停状态，写入时必须带上流程、版本和业务单据标识。
+    RESOURCE_APPROVAL_INSTANCE: BindingDefinition(
+        model=ProcessUsageRecord,
+        resource_id_field="approval_instance_id",
+        status_field=None,
+        required_attribute_fields=(
+            "process_id",
+            "process_version_id",
+            "business_key",
+        ),
     ),
 }
 
@@ -64,20 +98,28 @@ class TenantResourceScope(ResourceScope):
             binding_model,
             self.binding_definition.resource_id_field,
         )
-        binding_exists = exists(
-            select(binding_model.id).where(
-                binding_model.tenant_id == self.tenant_id,
-                binding_resource_id == resource_id_column,
-                binding_model.status == "ENABLED",
-            )
-        )
+        conditions = [
+            binding_model.tenant_id == self.tenant_id,
+            binding_resource_id == resource_id_column,
+        ]
+
+        # 没有启停状态的绑定只要求记录存在，不追加状态条件。
+        status_field = self.binding_definition.status_field
+        if status_field is not None:
+            conditions.append(getattr(binding_model, status_field) == "ENABLED")
+
+        binding_exists = exists(select(binding_model.id).where(*conditions))
         return statement.where(binding_exists)
 
     def require_access(self, resource_id: UUID, db: Session) -> None:
-        """确认当前租户存在已启用的资源绑定。"""
+        """确认当前租户存在可用的资源绑定。"""
 
         binding = self.get_binding(resource_id, db)
-        if not binding or binding.status != "ENABLED":
+        if not binding:
+            raise TenantResourceAccessError("当前租户无权访问该资源")
+
+        status_field = self.binding_definition.status_field
+        if status_field is not None and getattr(binding, status_field) != "ENABLED":
             raise TenantResourceAccessError("当前租户无权访问该资源")
 
     def bind(
@@ -88,27 +130,44 @@ class TenantResourceScope(ResourceScope):
     ) -> Any:
         """创建或重新启用当前租户的资源绑定。"""
 
-        existing_binding = self.get_binding(resource_id, db)
+        binding_definition = self.binding_definition
         normalized_attributes = attributes or {}
 
+        missing_fields = [
+            field_name
+            for field_name in binding_definition.required_attribute_fields
+            if normalized_attributes.get(field_name) is None
+        ]
+        if missing_fields:
+            raise ValueError("资源绑定缺少必需字段：" + "、".join(missing_fields))
+
+        existing_binding = self.get_binding(resource_id, db)
         if existing_binding:
-            existing_binding.status = "ENABLED"
+            status_field = binding_definition.status_field
+            if status_field is None:
+                # 使用记录是不可变的历史事实。即使重复绑定时传入了不同属性，也保留
+                # 第一次写入的原始数据，避免流程归属和业务单号被意外篡改。
+                return existing_binding
+
+            # 普通授权记录允许重新启用，并同步调用方显式传入的扩展属性。
+            setattr(existing_binding, status_field, "ENABLED")
             self._apply_supported_attributes(existing_binding, normalized_attributes)
             db.add(existing_binding)
             return existing_binding
 
-        binding_model = self.binding_definition.model
-        binding_values = {
+        binding_values: dict[str, Any] = {
             "tenant_id": self.tenant_id,
-            self.binding_definition.resource_id_field: resource_id,
-            "status": "ENABLED",
+            binding_definition.resource_id_field: resource_id,
         }
-        supported_fields = binding_model.model_fields
+        if binding_definition.status_field is not None:
+            binding_values[binding_definition.status_field] = "ENABLED"
+
+        supported_fields = binding_definition.model.model_fields
         for field_name, field_value in normalized_attributes.items():
             if field_name in supported_fields:
                 binding_values[field_name] = field_value
 
-        binding = binding_model(**binding_values)
+        binding = binding_definition.model(**binding_values)
         db.add(binding)
         return binding
 
@@ -119,7 +178,11 @@ class TenantResourceScope(ResourceScope):
         if not binding:
             return
 
-        binding.status = "DISABLED"
+        status_field = self.binding_definition.status_field
+        if status_field is None:
+            return
+
+        setattr(binding, status_field, "DISABLED")
         db.add(binding)
 
     def get_binding(self, resource_id: UUID, db: Session) -> Any | None:
@@ -143,8 +206,11 @@ class TenantResourceScope(ResourceScope):
         statement = select(binding_model).where(
             binding_model.tenant_id == self.tenant_id
         )
-        if enabled_only:
-            statement = statement.where(binding_model.status == "ENABLED")
+
+        status_field = self.binding_definition.status_field
+        if enabled_only and status_field is not None:
+            statement = statement.where(getattr(binding_model, status_field) == "ENABLED")
+
         statement = statement.order_by(binding_model.created_at.desc())
         return list(db.exec(statement).all())
 
