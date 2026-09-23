@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>审批中心 · 配置台</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<nav class="rail">
+  <div class="rail__brand">
+    <div class="rail__brand-name">审批中心</div>
+    <div class="rail__brand-note">配置台与审批工作台</div>
+  </div>
+
+  <div id="rail-nav"></div>
+
+  <div class="rail__foot">
+    <div>接口地址与密钥保存在本机浏览器，不会上传。</div>
+  </div>
+</nav>
+
+<div class="work">
+  <header class="topbar">
+    <div class="topbar__field">
+      <span class="topbar__label">接口地址</span>
+      <input id="cfg-base" class="topbar__input topbar__input--wide" spellcheck="false">
+    </div>
+    <div class="topbar__field">
+      <span class="topbar__label">管理密钥</span>
+      <input id="cfg-admin" class="topbar__input topbar__input--key" type="password" spellcheck="false" placeholder="X-Admin-Key">
+    </div>
+    <button id="cfg-check" class="btn btn--sm">测试连接</button>
+    <span id="cfg-state" class="link-state"><i class="link-state__dot"></i><span>未连接</span></span>
+    <span id="demo-banner" class="demo-banner" hidden>
+      示例数据模式
+      <button class="btn--link btn--sm" data-act="demo-off" style="color:#fff">退出</button>
+    </span>
+  </header>
+
+  <main id="view" class="content"></main>
+</div>
+
+<div id="overlay-host"></div>
+<div id="toast-host" class="toasts" aria-live="polite"></div>
+
+<!-- 示例数据：仅用于界面预览，正式联调前可以删除本行。 -->
+<script src="demo.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

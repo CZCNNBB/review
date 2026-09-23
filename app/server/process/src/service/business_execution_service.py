@@ -14,10 +14,7 @@ from app.server.integration.src.models.business_action_model import BusinessActi
 from app.server.integration.src.repository.business_action_repository import (
     BusinessActionRepository,
 )
-from app.server.process.src.constants import (
-    END_RESULT_STATUS_APPROVED,
-    EXECUTION_STATUS_PENDING,
-)
+from app.server.process.src.constants import EXECUTION_STATUS_PENDING
 from app.server.process.src.models.approval_model import ApprovalInstance
 from app.server.process.src.models.execution_model import BusinessExecutionRecord
 from app.server.process.src.repository.execution_repository import (
@@ -55,23 +52,21 @@ class BusinessExecutionService:
     def create_execution_record(
         self,
         instance: ApprovalInstance,
-        result_status: str,
         db: Session,
     ) -> BusinessExecutionRecord | None:
-        """审批形成最终状态时创建唯一的待执行记录。
+        """审批通过、准备结束实例时创建唯一的待执行记录。
 
-        只有最终状态为 APPROVED 且配置了 action_code 的实例才产生执行记录。审批被
-        拒绝、取消或还在运行中时不创建，只完成审批不触发业务的申请也不会创建。
+        只有配置了 action_code 的实例才产生执行记录。审批被拒绝、取消或还在运行中
+        时不创建（拒绝走 reject_instance，不会调到本方法），只完成审批不触发业务的
+        申请也不会创建。
 
         本方法只 write 当前 Session，调用方负责提交。记录创建失败时审批状态更新会随
         同一个事务一起回滚，不会出现审批已通过但没有执行任务的情况。
 
-        特别注意：START → END(APPROVED) 时租户使用记录可能还没有写入，因此这里既不
-        解析租户配置，也不发送请求，一律交给事务提交后的后台执行器处理。
+        特别注意：START → END 时租户使用记录可能还没有写入，因此这里既不解析租户
+        配置，也不发送请求，一律交给事务提交后的后台执行器处理。
         """
 
-        if result_status != END_RESULT_STATUS_APPROVED:
-            return None
         if not instance.action_code:
             return None
 

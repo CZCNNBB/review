@@ -13,9 +13,8 @@ from uuid import UUID
 
 from app.server.process.src.constants import (
     APPROVAL_MODES,
+    BRANCHING_NODE_TYPES,
     CONDITION_OPERATOR_RULES,
-    END_RESULT_STATUSES,
-    END_RESULT_STATUS_APPROVED,
     FORM_FIELD_PREFIX,
     MAX_FORM_SCHEMA_DEPTH,
     NODE_DEFINITION_STATUS_ENABLED,
@@ -32,18 +31,15 @@ from app.server.process.src.constants import (
     RULE_APPROVER_NOT_FOUND,
     RULE_APPROVER_REQUIRED,
     RULE_CONNECTION_CONDITION_INVALID,
-    RULE_CONNECTION_CONDITION_REQUIRED,
-    RULE_CONNECTION_DEFAULT_REQUIRED,
-    RULE_CONNECTION_DEFAULT_DUPLICATE,
-    RULE_CONNECTION_DEFAULT_WITH_CONDITION,
+    RULE_BRANCH_FALLBACK_INVALID,
+    RULE_BRANCH_MISSING_CONDITION,
+    RULE_BRANCH_TARGET_REQUIRED,
     RULE_CONNECTION_FIELD_UNKNOWN,
     RULE_CONNECTION_NODE_UNKNOWN,
     RULE_CONNECTION_OPERATOR_INCOMPATIBLE,
     RULE_CONNECTION_VALUE_NOT_IN_ENUM,
-    RULE_END_APPROVED_REQUIRED,
     RULE_END_AS_SOURCE,
     RULE_END_REQUIRED,
-    RULE_END_RESULT_STATUS_INVALID,
     RULE_GRAPH_CYCLE,
     RULE_NODE_CONFIG_INVALID,
     RULE_NODE_DEFINITION_DISABLED,
@@ -54,6 +50,7 @@ from app.server.process.src.constants import (
     RULE_ORCHESTRATION_INVALID,
     RULE_START_AS_TARGET,
     RULE_START_COUNT_INVALID,
+    RULE_TOO_MANY_OUTGOING_CONNECTIONS,
     SUPPORTED_NODE_TYPES,
 )
 from app.server.process.src.service.exceptions import ProcessValidationError
@@ -72,7 +69,6 @@ _COLOR_BLACK = 2
 # 审批人配置根路径，用于拼装前端可定位的字段路径。
 _APPROVERS_FIELD = "config.approvers"
 _APPROVAL_MODE_FIELD = "config.approval_mode"
-_RESULT_STATUS_FIELD = "config.result_status"
 
 
 @dataclass(frozen=True)
@@ -98,12 +94,15 @@ class GraphNode:
 
 @dataclass(frozen=True)
 class GraphConnection:
-    """校验用的连线视图，把条件分支表达为一条带顺序的连接。"""
+    """校验用的连线视图，把条件分支表达为一条带顺序的连接。
+
+    target_node_id 可以为空：条件分支可以先在节点里定义好，再把线拉到目标节点上，
+    "定义好了还没接"是一个合法中间状态，发布前由校验要求补全。
+    """
 
     source_node_id: UUID
-    target_node_id: UUID
+    target_node_id: UUID | None
     condition: Mapping[str, Any] | None
-    is_default: bool
     order_index: int
 
 
@@ -240,7 +239,9 @@ def parse_connections(
             continue
 
         source_node_id = _parse_uuid(raw_connection.get("source_node_id"))
-        target_node_id = _parse_uuid(raw_connection.get("target_node_id"))
+        raw_target = raw_connection.get("target_node_id")
+        # 目标允许为空：分支可以先定义好，之后再拉线到目标节点
+        target_node_id = None if raw_target in (None, "") else _parse_uuid(raw_target)
 
         if source_node_id is None:
             issues.append(
@@ -251,7 +252,7 @@ def parse_connections(
                     connection_index=order_index,
                 )
             )
-        if target_node_id is None:
+        if raw_target not in (None, "") and target_node_id is None:
             issues.append(
                 ValidationIssue(
                     code=RULE_ORCHESTRATION_INVALID,
@@ -261,20 +262,11 @@ def parse_connections(
                 )
             )
 
-        is_default = bool(raw_connection.get("default", False))
+        # 这里不再读取旧版本写入的 default 标志位：分支的兜底由"最后一条出线"表达，
+        # 标志位留在旧数据里也不会影响校验和运行。
         condition = _parse_condition(raw_connection.get("condition"), position_text, order_index, issues)
 
-        if is_default and condition is not None:
-            issues.append(
-                ValidationIssue(
-                    code=RULE_CONNECTION_DEFAULT_WITH_CONDITION,
-                    message=f"{position_text}不能同时配置条件分支和默认路径",
-                    connection_index=order_index,
-                )
-            )
-            condition = None
-
-        if source_node_id is None or target_node_id is None:
+        if source_node_id is None:
             continue
 
         connections.append(
@@ -282,7 +274,6 @@ def parse_connections(
                 source_node_id=source_node_id,
                 target_node_id=target_node_id,
                 condition=condition,
-                is_default=is_default,
                 order_index=order_index,
             )
         )
@@ -487,7 +478,7 @@ def validate_graph(
     issues.extend(check_start_and_end(graph, node_types))
     issues.extend(check_connection_endpoints(graph, node_types))
     issues.extend(check_topology(graph, node_types))
-    issues.extend(check_connection_conditions(graph))
+    issues.extend(check_connection_conditions(graph, node_types))
 
     return _deduplicate_issues(issues)
 
@@ -712,7 +703,7 @@ def check_start_and_end(
     graph: ProcessGraph,
     node_types: Mapping[UUID, str],
 ) -> list[ValidationIssue]:
-    """校验开始节点数量、结束节点数量和结束状态。"""
+    """校验开始节点数量、结束节点数量。"""
 
     issues: list[ValidationIssue] = []
 
@@ -738,33 +729,8 @@ def check_start_and_end(
         )
         return issues
 
-    approved_end_count = 0
-    for node in end_nodes:
-        result_status = node.config.get("result_status")
-        if result_status not in END_RESULT_STATUSES:
-            issues.append(
-                ValidationIssue(
-                    code=RULE_END_RESULT_STATUS_INVALID,
-                    message=(
-                        f"节点「{node.name}」的结束状态必须是 APPROVED 或 REJECTED"
-                    ),
-                    node_id=node.id,
-                    field=_RESULT_STATUS_FIELD,
-                )
-            )
-            continue
-        if result_status == END_RESULT_STATUS_APPROVED:
-            approved_end_count += 1
-
-    # 只有审批拒绝的出口时流程永远无法成功，因此要求至少一个通过状态的结束节点。
-    if approved_end_count == 0:
-        issues.append(
-            ValidationIssue(
-                code=RULE_END_APPROVED_REQUIRED,
-                message="流程至少需要一个结束状态为 APPROVED 的结束节点",
-            )
-        )
-
+    # 结束节点没有配置项：走到它就是审批通过、流程完成。审批被拒绝由审批人在
+    # 人工审批节点当场结束实例，不会走结束节点。
     return issues
 
 
@@ -788,23 +754,25 @@ def check_connection_endpoints(
                     connection_index=connection.order_index,
                 )
             )
-        if connection.target_node_id not in node_ids:
-            issues.append(
-                ValidationIssue(
-                    code=RULE_CONNECTION_NODE_UNKNOWN,
-                    message=f"{position_text}的目标节点不属于当前流程",
-                    connection_index=connection.order_index,
+        # 还没接目标的连线由"分支未接去向"规则报出，这里跳过目标相关判断
+        if connection.target_node_id is not None:
+            if connection.target_node_id not in node_ids:
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_CONNECTION_NODE_UNKNOWN,
+                        message=f"{position_text}的目标节点不属于当前流程",
+                        connection_index=connection.order_index,
+                    )
                 )
-            )
-        if node_types.get(connection.target_node_id) == NODE_TYPE_START:
-            issues.append(
-                ValidationIssue(
-                    code=RULE_START_AS_TARGET,
-                    message=f"{position_text}把开始节点作为目标节点",
-                    node_id=connection.target_node_id,
-                    connection_index=connection.order_index,
+            if node_types.get(connection.target_node_id) == NODE_TYPE_START:
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_START_AS_TARGET,
+                        message=f"{position_text}把开始节点作为目标节点",
+                        node_id=connection.target_node_id,
+                        connection_index=connection.order_index,
+                    )
                 )
-            )
         if node_types.get(connection.source_node_id) == NODE_TYPE_END:
             issues.append(
                 ValidationIssue(
@@ -874,12 +842,16 @@ def check_topology(
     return issues
 
 
-def check_connection_conditions(graph: ProcessGraph) -> list[ValidationIssue]:
+def check_connection_conditions(
+    graph: ProcessGraph,
+    node_types: Mapping[UUID, str] | None = None,
+) -> list[ValidationIssue]:
     """校验同源连线上的条件分支规则和条件内容。"""
 
     issues: list[ValidationIssue] = []
     form_fields = collect_form_fields(graph.form_schema)
     node_names = {node.id: node.name for node in graph.nodes}
+    types = node_types or {}
 
     connections_by_source: dict[UUID, list[GraphConnection]] = defaultdict(list)
     for connection in graph.connections:
@@ -887,48 +859,71 @@ def check_connection_conditions(graph: ProcessGraph) -> list[ValidationIssue]:
 
     for source_node_id, connections in connections_by_source.items():
         source_name = node_names.get(source_node_id, str(source_node_id))
-        default_connections = [
-            connection for connection in connections if connection.is_default
-        ]
-        conditional_connections = [
-            connection for connection in connections if connection.condition is not None
-        ]
+        source_type = types.get(source_node_id)
 
-        # 只要存在条件路径，就必须提供唯一的兜底路径。否则全部条件都不命中时，
-        # 运行引擎无法选择下一个节点，审批实例会停在当前节点。
-        if conditional_connections and not default_connections:
-            issues.append(
-                ValidationIssue(
-                    code=RULE_CONNECTION_DEFAULT_REQUIRED,
-                    message=f"节点「{source_name}」存在条件分支，必须配置一条默认路径",
-                    node_id=source_node_id,
-                )
-            )
-
-        if len(connections) > 1:
-            for duplicated in default_connections[1:]:
+        # 分流只允许从条件分支节点出去。普通节点出现多条出线、条件出线或兜底标记，
+        # 都说明分流画错了位置：运行时会永远只走第一条，属于很难察觉的错误。
+        # 这一类问题由下面这条规则统一报出，后面的分支规则对它不适用，避免误导。
+        if source_type is not None and source_type not in BRANCHING_NODE_TYPES:
+            if len(connections) > 1 or any(
+                connection.condition is not None for connection in connections
+            ):
                 issues.append(
                     ValidationIssue(
-                        code=RULE_CONNECTION_DEFAULT_DUPLICATE,
-                        message=f"节点「{source_name}」的后续连线只能配置一条默认路径",
-                        node_id=source_node_id,
-                        connection_index=duplicated.order_index,
-                    )
-                )
-            for connection in connections:
-                if connection.is_default or connection.condition is not None:
-                    continue
-                issues.append(
-                    ValidationIssue(
-                        code=RULE_CONNECTION_CONDITION_REQUIRED,
+                        code=RULE_TOO_MANY_OUTGOING_CONNECTIONS,
                         message=(
-                            f"节点「{source_name}」存在多条后续连线，"
-                            f"第 {connection.order_index + 1} 条连线必须配置条件或标记为默认路径"
+                            f"节点「{source_name}」不允许分流：只有条件分支节点可以有多条出线"
+                            "或带条件的出线，请先连到一个条件分支节点，再从那里分支"
                         ),
                         node_id=source_node_id,
-                        connection_index=connection.order_index,
                     )
                 )
+            continue
+
+        # 条件分支节点的出线按顺序表达一条 if/elif/else 阶梯：前面每条都要有条件，
+        # 最后一条是"其余情况"，不能带条件。最后一条兜住所有条件都不满足的情况，
+        # 缺了它引擎会选不出下一个节点，所以这里不能用"有没有兜底"以外的写法。
+        if source_type in BRANCHING_NODE_TYPES:
+            last_position = len(connections) - 1
+            for position, connection in enumerate(connections):
+                if connection.target_node_id is None:
+                    issues.append(
+                        ValidationIssue(
+                            code=RULE_BRANCH_TARGET_REQUIRED,
+                            message=(
+                                f"节点「{source_name}」的第 {position + 1} 条分支还没有接去向，"
+                                "从分支行右侧的圆点拉一条线到目标节点"
+                            ),
+                            node_id=source_node_id,
+                            connection_index=connection.order_index,
+                        )
+                    )
+                if position == last_position:
+                    if connection.condition is not None:
+                        issues.append(
+                            ValidationIssue(
+                                code=RULE_BRANCH_FALLBACK_INVALID,
+                                message=(
+                                    f"节点「{source_name}」的最后一条连线是"
+                                    "“其余情况”，用来兜住条件都不满足的时候，不能配条件"
+                                ),
+                                node_id=source_node_id,
+                                connection_index=connection.order_index,
+                            )
+                        )
+                    continue
+                if connection.condition is None:
+                    issues.append(
+                        ValidationIssue(
+                            code=RULE_BRANCH_MISSING_CONDITION,
+                            message=(
+                                f"节点「{source_name}」的第 {position + 1} 条连线要配条件；"
+                                "只有最后一条才是“其余情况”"
+                            ),
+                            node_id=source_node_id,
+                            connection_index=connection.order_index,
+                        )
+                    )
 
     for connection in graph.connections:
         if connection.condition is None:
@@ -1083,7 +1078,11 @@ def _build_adjacency(
     """按连线出现顺序构造邻接表。"""
 
     adjacency: dict[UUID, list[tuple[UUID, int]]] = defaultdict(list)
+
     for connection in graph.connections:
+        # 还没接目标的连线条不构成"走得到"，出边和可达性都只统计接了目标的
+        if connection.target_node_id is None:
+            continue
         adjacency[connection.source_node_id].append(
             (connection.target_node_id, connection.order_index)
         )
@@ -1189,16 +1188,15 @@ def serialize_connections(
 
         if node_id_map is not None:
             source_node_id = _require_mapped_node(source_node_id, node_id_map)
-            target_node_id = _require_mapped_node(target_node_id, node_id_map)
+            if target_node_id is not None:
+                target_node_id = _require_mapped_node(target_node_id, node_id_map)
 
         serialized_connection: dict[str, Any] = {
             "source_node_id": str(source_node_id),
-            "target_node_id": str(target_node_id),
+            "target_node_id": str(target_node_id) if target_node_id is not None else None,
         }
         if connection.condition is not None:
             serialized_connection["condition"] = deepcopy(dict(connection.condition))
-        if connection.is_default:
-            serialized_connection["default"] = True
         serialized_connections.append(serialized_connection)
 
     return {ORCHESTRATION_CONNECTIONS_KEY: serialized_connections}

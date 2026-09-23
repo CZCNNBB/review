@@ -35,15 +35,16 @@ def build_connection(
     order_index: int,
     target_node_id=None,
     condition: dict | None = None,
-    is_default: bool = False,
 ) -> GraphConnection:
-    """构造一条校验视图中的连线。"""
+    """构造一条校验视图中的连线。
+
+    兜底由"最后一条无条件连线"表达，没有单独的标志位。
+    """
 
     return GraphConnection(
         source_node_id=uuid4(),
         target_node_id=target_node_id or uuid4(),
         condition=condition,
-        is_default=is_default,
         order_index=order_index,
     )
 
@@ -419,7 +420,7 @@ class PathSelectionTestCase(unittest.TestCase):
                 0,
                 condition=build_condition("GT", 10000),
             ),
-            build_connection(1, target_node_id=default_target, is_default=True),
+            build_connection(1, target_node_id=default_target),
         ]
         selected = select_next_connection(connections, {"amount": 100})
         self.assertIsNotNone(selected)
@@ -452,7 +453,7 @@ class PathSelectionTestCase(unittest.TestCase):
                 target_node_id=conditioned_target,
                 condition=build_condition("LT", "2024-12-31T18:00:00Z", field=deadline_field),
             ),
-            build_connection(1, target_node_id=default_target, is_default=True),
+            build_connection(1, target_node_id=default_target),
         ]
 
         # 该取值实际是 2024-12-31T16:00:00Z，早于条件值，应命中条件分支；

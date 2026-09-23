@@ -24,6 +24,7 @@ from app.server.process.src.constants import (
     NODE_EXECUTION_STATUS_ERROR,
     NODE_EXECUTION_STATUS_REJECTED,
     NODE_TYPE_APPROVAL,
+    NODE_TYPE_CONDITION,
     NODE_TYPE_END,
     NODE_TYPE_START,
     TASK_STATUS_APPROVED,
@@ -125,14 +126,25 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             position={"x": 300, "y": 100},
         )
 
-    def build_end_node(self, result_status: str = "APPROVED") -> ProcessGraphNodeRequest:
-        """构造结束节点。"""
+    def build_condition_node(self, name: str = "条件分支") -> ProcessGraphNodeRequest:
+        """构造条件分支节点。"""
+
+        return ProcessGraphNodeRequest(
+            id=uuid4(),
+            node_definition_id=self.seed[NODE_TYPE_CONDITION].id,
+            name=name,
+            config={},
+            position={"x": 300, "y": 100},
+        )
+
+    def build_end_node(self, name: str = "结束") -> ProcessGraphNodeRequest:
+        """构造结束节点。结束节点没有配置项：走到它就是审批通过、流程完成。"""
 
         return ProcessGraphNodeRequest(
             id=uuid4(),
             node_definition_id=self.seed[NODE_TYPE_END].id,
-            name=f"结束-{result_status}",
-            config={"result_status": result_status},
+            name=name,
+            config={},
             position={"x": 500, "y": 100},
         )
 
@@ -695,9 +707,9 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
     def publish_branch_process(self) -> tuple[UUID, dict[str, UUID]]:
         """发布带条件分支的流程。
 
-        财务审批按金额选择后续路径：金额超过阈值时进入总经理审批后通过，未超过阈值
-        时走默认路径进入拒绝结束节点。版本校验要求至少存在一个通过结束节点，因此
-        拒绝出口必须和通过出口并存。
+        财务审批按金额选择后续路径：金额超过阈值时进入总经理审批，未超过阈值时走
+        分支节点的最后一条（其余情况）直接结束。两条路径都以审批通过收尾——审批被
+        拒绝时实例在人工审批节点就结束了，不会走到结束节点。
         """
 
         form_schema = {
@@ -707,12 +719,20 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         process_id = self.create_process(form_schema)
         start_node = self.build_start_node()
         finance_node = self.build_approval_node("财务审批", [self.approver_a])
+        branch_node = self.build_condition_node()
         manager_node = self.build_approval_node("总经理审批", [self.approver_b])
-        approved_end_node = self.build_end_node("APPROVED")
-        rejected_end_node = self.build_end_node("REJECTED")
+        manager_end_node = self.build_end_node("总经理通过")
+        fallback_end_node = self.build_end_node("直接结束")
         version_id = self.save_and_publish(
             process_id,
-            [start_node, finance_node, manager_node, approved_end_node, rejected_end_node],
+            [
+                start_node,
+                finance_node,
+                branch_node,
+                manager_node,
+                manager_end_node,
+                fallback_end_node,
+            ],
             [
                 {
                     "source_node_id": str(start_node.id),
@@ -720,6 +740,11 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 },
                 {
                     "source_node_id": str(finance_node.id),
+                    "target_node_id": str(branch_node.id),
+                },
+                # 分支节点按顺序构成 if/else：先条件，最后一条是兜底
+                {
+                    "source_node_id": str(branch_node.id),
                     "target_node_id": str(manager_node.id),
                     "condition": {
                         "field": "approval_form.amount",
@@ -728,13 +753,12 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                     },
                 },
                 {
-                    "source_node_id": str(finance_node.id),
-                    "target_node_id": str(rejected_end_node.id),
-                    "default": True,
+                    "source_node_id": str(branch_node.id),
+                    "target_node_id": str(fallback_end_node.id),
                 },
                 {
                     "source_node_id": str(manager_node.id),
-                    "target_node_id": str(approved_end_node.id),
+                    "target_node_id": str(manager_end_node.id),
                 },
             ],
             form_schema,
@@ -742,9 +766,10 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         return process_id, {
             "version_id": version_id,
             "finance": finance_node.id,
+            "branch": branch_node.id,
             "manager": manager_node.id,
-            "approved_end": approved_end_node.id,
-            "rejected_end": rejected_end_node.id,
+            "manager_end": manager_end_node.id,
+            "fallback_end": fallback_end_node.id,
         }
 
     def test_condition_branch_selects_matching_path(self) -> None:
@@ -766,12 +791,16 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         )
         self.assertEqual(
             [execution.node_type for execution in large_view.node_executions],
-            [NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_APPROVAL],
+            [NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_CONDITION, NODE_TYPE_APPROVAL],
         )
         finance_execution = large_view.node_executions[1]
         self.assertEqual(finance_execution.node_id, node_ids["finance"])
-        self.assertEqual(finance_execution.next_node_id, node_ids["manager"])
-        self.assertTrue(finance_execution.result_json["condition_hit"])
+        self.assertEqual(finance_execution.next_node_id, node_ids["branch"])
+
+        branch_execution = large_view.node_executions[2]
+        self.assertEqual(branch_execution.node_id, node_ids["branch"])
+        self.assertEqual(branch_execution.next_node_id, node_ids["manager"])
+        self.assertTrue(branch_execution.result_json["condition_hit"])
 
         manager_task = self.get_pending_task(large_started.instance.id, self.approver_b)
         self.handle_task(manager_task.id, self.approver_b)
@@ -781,7 +810,7 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         )
 
     def test_default_path_is_used_when_condition_misses(self) -> None:
-        """条件未命中时走默认路径，进入拒绝结束节点。"""
+        """条件未命中时走默认路径，直接走完结束节点。"""
 
         process_id, node_ids = self.publish_branch_process()
         started = self.start_instance(
@@ -795,14 +824,19 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         view = self.instance_service.get_instance_view(started.instance.id, self.db)
         self.assertEqual(
             [execution.node_type for execution in view.node_executions],
-            [NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_END],
+            [NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_CONDITION, NODE_TYPE_END],
         )
         finance_execution = view.node_executions[1]
-        self.assertEqual(finance_execution.next_node_id, node_ids["rejected_end"])
-        self.assertFalse(finance_execution.result_json["condition_hit"])
+        self.assertEqual(finance_execution.next_node_id, node_ids["branch"])
+
+        # 条件不命中时走分支节点的最后一条（其余情况），命中信息记在分支节点上
+        branch_execution = view.node_executions[2]
+        self.assertEqual(branch_execution.node_id, node_ids["branch"])
+        self.assertEqual(branch_execution.next_node_id, node_ids["fallback_end"])
+        self.assertFalse(branch_execution.result_json["condition_hit"])
         self.assertEqual(
             self.get_instance(started.instance.id).status,
-            INSTANCE_STATUS_REJECTED,
+            INSTANCE_STATUS_APPROVED,
         )
 
     # ------------------------------------------------------------------

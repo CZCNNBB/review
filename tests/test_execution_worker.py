@@ -573,7 +573,7 @@ class WorkerSkipLockedTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             id=uuid4(),
             node_definition_id=self.seed["END"].id,
             name="结束",
-            config={"result_status": "APPROVED"},
+            config={},
             position={"x": 300, "y": 100},
         )
         draft_version = self.process_service.repository.get_draft_version(

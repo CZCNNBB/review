@@ -16,19 +16,17 @@ from app.server.process.src.constants import (
     RULE_APPROVER_ID_INVALID,
     RULE_APPROVER_NOT_FOUND,
     RULE_APPROVER_REQUIRED,
+    RULE_BRANCH_FALLBACK_INVALID,
+    RULE_BRANCH_MISSING_CONDITION,
+    RULE_BRANCH_TARGET_REQUIRED,
     RULE_CONNECTION_CONDITION_INVALID,
-    RULE_CONNECTION_CONDITION_REQUIRED,
-    RULE_CONNECTION_DEFAULT_REQUIRED,
-    RULE_CONNECTION_DEFAULT_DUPLICATE,
-    RULE_CONNECTION_DEFAULT_WITH_CONDITION,
     RULE_CONNECTION_FIELD_UNKNOWN,
     RULE_CONNECTION_NODE_UNKNOWN,
     RULE_CONNECTION_OPERATOR_INCOMPATIBLE,
     RULE_CONNECTION_VALUE_NOT_IN_ENUM,
-    RULE_END_APPROVED_REQUIRED,
+    RULE_TOO_MANY_OUTGOING_CONNECTIONS,
     RULE_END_AS_SOURCE,
     RULE_END_REQUIRED,
-    RULE_END_RESULT_STATUS_INVALID,
     RULE_GRAPH_CYCLE,
     RULE_NODE_CONFIG_INVALID,
     RULE_NODE_DEFINITION_DISABLED,
@@ -102,21 +100,25 @@ class ValidationTestCase(unittest.TestCase):
             }
         return (node_id or uuid4(), self.seed["APPROVAL"].id, name, config)
 
+    def condition_node(
+        self,
+        node_id: UUID | None = None,
+        *,
+        name: str = "条件分支",
+    ) -> tuple:
+        """构造条件分支节点输入。"""
+
+        return (node_id or uuid4(), self.seed["CONDITION"].id, name, {})
+
     def end_node(
         self,
         node_id: UUID | None = None,
         *,
-        result_status: str = "APPROVED",
         name: str = "结束",
     ) -> tuple:
-        """构造结束节点输入。"""
+        """构造结束节点输入。结束节点没有配置项。"""
 
-        return (
-            node_id or uuid4(),
-            self.seed["END"].id,
-            name,
-            {"result_status": result_status},
-        )
+        return (node_id or uuid4(), self.seed["END"].id, name, {})
 
     def connection(
         self,
@@ -194,7 +196,43 @@ class ValidGraphTestCase(ValidationTestCase):
         self.assertEqual(issues, [])
 
     def test_conditional_branch_with_default_is_valid(self) -> None:
-        """条件分支加默认路径是合法编排。"""
+        """条件分支节点配条件加默认路径是合法编排。"""
+
+        start, approval, branch, manager, end = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
+        issues = self.validate(
+            [
+                self.start_node(start),
+                self.approval_node(approval),
+                self.condition_node(branch),
+                self.approval_node(manager, name="负责人审批"),
+                self.end_node(end),
+            ],
+            [
+                self.connection(start, approval),
+                self.connection(approval, branch),
+                self.connection(
+                    branch,
+                    manager,
+                    condition={
+                        "field": "approval_form.amount",
+                        "operator": "GT",
+                        "value": 10000,
+                    },
+                ),
+                self.connection(branch, end, is_default=True),
+                self.connection(manager, end),
+            ],
+        )
+        self.assertEqual(issues, [])
+
+    def test_approval_node_cannot_branch(self) -> None:
+        """普通节点只能有一条无条件连线，分流必须经过条件分支节点。"""
 
         start, approval, manager, end = uuid4(), uuid4(), uuid4(), uuid4()
         issues = self.validate(
@@ -206,23 +244,15 @@ class ValidGraphTestCase(ValidationTestCase):
             ],
             [
                 self.connection(start, approval),
-                self.connection(
-                    approval,
-                    manager,
-                    condition={
-                        "field": "approval_form.amount",
-                        "operator": "GT",
-                        "value": 10000,
-                    },
-                ),
-                self.connection(approval, end, is_default=True),
+                self.connection(approval, manager),
+                self.connection(approval, end),
                 self.connection(manager, end),
             ],
         )
-        self.assertEqual(issues, [])
+        self.assert_has_code(issues, RULE_TOO_MANY_OUTGOING_CONNECTIONS)
 
-    def test_single_conditional_connection_requires_default(self) -> None:
-        """即使只有一条条件连线，也必须提供条件不命中时的默认路径。"""
+    def test_approval_node_cannot_have_conditional_outgoing(self) -> None:
+        """普通节点挂条件出线同样属于分流，要报规则码。"""
 
         start, approval, end = uuid4(), uuid4(), uuid4()
         issues = self.validate(
@@ -240,27 +270,31 @@ class ValidGraphTestCase(ValidationTestCase):
                 ),
             ],
         )
-        self.assert_has_code(issues, RULE_CONNECTION_DEFAULT_REQUIRED)
+        self.assert_has_code(issues, RULE_TOO_MANY_OUTGOING_CONNECTIONS)
 
     def test_nested_form_field_path_is_supported(self) -> None:
         """嵌套表单字段路径可以用于条件。"""
 
-        start, approval, end, fallback_end = uuid4(), uuid4(), uuid4(), uuid4()
+        start, approval, branch, end, fallback_end = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
         issues = self.validate(
             [
                 self.start_node(start),
                 self.approval_node(approval),
+                self.condition_node(branch),
                 self.end_node(end),
-                self.end_node(
-                    fallback_end,
-                    result_status="REJECTED",
-                    name="默认结束",
-                ),
+                self.end_node(fallback_end, name="默认结束"),
             ],
             [
                 self.connection(start, approval),
+                self.connection(approval, branch),
                 self.connection(
-                    approval,
+                    branch,
                     end,
                     condition={
                         "field": "approval_form.payload.nested_amount",
@@ -268,7 +302,7 @@ class ValidGraphTestCase(ValidationTestCase):
                         "value": 1,
                     },
                 ),
-                self.connection(approval, fallback_end, is_default=True),
+                self.connection(branch, fallback_end, is_default=True),
             ],
         )
         self.assertEqual(issues, [])
@@ -535,34 +569,6 @@ class StartEndRuleTestCase(ValidationTestCase):
         )
         self.assert_has_code(issues, RULE_END_REQUIRED)
 
-    def test_invalid_result_status_is_reported(self) -> None:
-        """结束状态取值非法时报出规则码。"""
-
-        start, approval, end = uuid4(), uuid4(), uuid4()
-        issues = self.validate(
-            [
-                self.start_node(start),
-                self.approval_node(approval),
-                self.end_node(end, result_status="MAYBE"),
-            ],
-            [self.connection(start, approval), self.connection(approval, end)],
-        )
-        self.assert_has_code(issues, RULE_END_RESULT_STATUS_INVALID)
-
-    def test_flow_without_approved_end_is_rejected(self) -> None:
-        """只有审批拒绝出口的流程没有任何成功路径。"""
-
-        start, approval, end = uuid4(), uuid4(), uuid4()
-        issues = self.validate(
-            [
-                self.start_node(start),
-                self.approval_node(approval),
-                self.end_node(end, result_status="REJECTED"),
-            ],
-            [self.connection(start, approval), self.connection(approval, end)],
-        )
-        self.assert_has_code(issues, RULE_END_APPROVED_REQUIRED)
-
 
 class ConnectionEndpointRuleTestCase(ValidationTestCase):
     """连线两端和连接方向规则。"""
@@ -752,22 +758,8 @@ class TopologyRuleTestCase(ValidationTestCase):
 class ConnectionConditionRuleTestCase(ValidationTestCase):
     """条件分支规则。"""
 
-    def test_multiple_connections_without_condition_is_reported(self) -> None:
-        """多条同源连线缺少条件时报出规则码。"""
-
-        start, approval, end = uuid4(), uuid4(), uuid4()
-        issues = self.validate(
-            [self.start_node(start), self.approval_node(approval), self.end_node(end)],
-            [
-                self.connection(start, approval),
-                self.connection(approval, end),
-                self.connection(approval, start),
-            ],
-        )
-        self.assert_has_code(issues, RULE_CONNECTION_CONDITION_REQUIRED)
-
-    def test_duplicate_default_connection_is_reported(self) -> None:
-        """同一来源存在两条默认连线时报出规则码。"""
+    def test_plain_node_with_multiple_connections_is_reported(self) -> None:
+        """普通节点拉出多条后续连线时报出规则码。"""
 
         start, approval, end, other_end = uuid4(), uuid4(), uuid4(), uuid4()
         issues = self.validate(
@@ -779,33 +771,93 @@ class ConnectionConditionRuleTestCase(ValidationTestCase):
             ],
             [
                 self.connection(start, approval),
-                self.connection(approval, end, is_default=True),
-                self.connection(approval, other_end, is_default=True),
+                self.connection(approval, end),
+                self.connection(approval, other_end),
             ],
         )
-        self.assert_has_code(issues, RULE_CONNECTION_DEFAULT_DUPLICATE)
+        self.assert_has_code(issues, RULE_TOO_MANY_OUTGOING_CONNECTIONS)
 
-    def test_default_with_condition_is_reported(self) -> None:
-        """同一条连线不能既是默认路径又带条件。"""
+    def test_branch_fallback_cannot_have_condition(self) -> None:
+        """分支节点的最后一条连线是"其余情况"，不能配条件。"""
 
-        start, approval, end = uuid4(), uuid4(), uuid4()
+        start, branch, end, other_end = uuid4(), uuid4(), uuid4(), uuid4()
         issues = self.validate(
-            [self.start_node(start), self.approval_node(approval), self.end_node(end)],
             [
-                self.connection(start, approval),
+                self.start_node(start),
+                self.condition_node(branch),
+                self.end_node(end),
+                self.end_node(other_end, name="结束二"),
+            ],
+            [
+                self.connection(start, branch),
                 self.connection(
-                    approval,
+                    branch,
                     end,
-                    is_default=True,
                     condition={
                         "field": "approval_form.amount",
                         "operator": "GT",
-                        "value": 1,
+                        "value": 10000,
+                    },
+                ),
+                self.connection(
+                    branch,
+                    other_end,
+                    condition={
+                        "field": "approval_form.amount",
+                        "operator": "LTE",
+                        "value": 10000,
                     },
                 ),
             ],
         )
-        self.assert_has_code(issues, RULE_CONNECTION_DEFAULT_WITH_CONDITION)
+        self.assert_has_code(issues, RULE_BRANCH_FALLBACK_INVALID)
+
+    def test_branch_without_target_is_reported(self) -> None:
+        """分支定义了但还没接去向时报出规则码。"""
+
+        start, branch, end = uuid4(), uuid4(), uuid4()
+        issues = self.validate(
+            [self.start_node(start), self.condition_node(branch), self.end_node(end)],
+            [
+                self.connection(start, branch),
+                self.connection(branch, end),
+                # 第二条还没有目标：从分支行拉线之前就是这个状态
+                {"source_node_id": str(branch)},
+            ],
+        )
+        self.assert_has_code(issues, RULE_BRANCH_TARGET_REQUIRED)
+
+    def test_branch_definition_without_target_is_reported(self) -> None:
+        """目标写成 null 与缺字段等价，同样要求补齐去向。"""
+
+        start, branch, end = uuid4(), uuid4(), uuid4()
+        issues = self.validate(
+            [self.start_node(start), self.condition_node(branch), self.end_node(end)],
+            [
+                self.connection(start, branch),
+                {"source_node_id": str(branch), "target_node_id": None},
+            ],
+        )
+        self.assert_has_code(issues, RULE_BRANCH_TARGET_REQUIRED)
+
+    def test_branch_connection_before_last_needs_condition(self) -> None:
+        """分支节点除最后一条外，每条连线都要配条件。"""
+
+        start, branch, end, other_end = uuid4(), uuid4(), uuid4(), uuid4()
+        issues = self.validate(
+            [
+                self.start_node(start),
+                self.condition_node(branch),
+                self.end_node(end),
+                self.end_node(other_end, name="结束二"),
+            ],
+            [
+                self.connection(start, branch),
+                self.connection(branch, end),
+                self.connection(branch, other_end),
+            ],
+        )
+        self.assert_has_code(issues, RULE_BRANCH_MISSING_CONDITION)
 
     def test_unknown_condition_field_is_reported(self) -> None:
         """条件字段不存在于审批表单时报出规则码。"""
@@ -890,22 +942,26 @@ class ConnectionConditionRuleTestCase(ValidationTestCase):
     def test_ordering_operator_on_date_string_is_valid(self) -> None:
         """带 date 格式的字符串字段支持大小比较。"""
 
-        start, approval, end, fallback_end = uuid4(), uuid4(), uuid4(), uuid4()
+        start, approval, branch, end, fallback_end = (
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+            uuid4(),
+        )
         issues = self.validate(
             [
                 self.start_node(start),
                 self.approval_node(approval),
+                self.condition_node(branch),
                 self.end_node(end),
-                self.end_node(
-                    fallback_end,
-                    result_status="REJECTED",
-                    name="默认结束",
-                ),
+                self.end_node(fallback_end, name="默认结束"),
             ],
             [
                 self.connection(start, approval),
+                self.connection(approval, branch),
                 self.connection(
-                    approval,
+                    branch,
                     end,
                     condition={
                         "field": "approval_form.submit_date",
@@ -913,7 +969,7 @@ class ConnectionConditionRuleTestCase(ValidationTestCase):
                         "value": "2026-01-01",
                     },
                 ),
-                self.connection(approval, fallback_end, is_default=True),
+                self.connection(branch, fallback_end),
             ],
         )
         self.assertEqual(issues, [])

@@ -11,11 +11,7 @@ from sqlalchemy.pool import StaticPool
 from sqlmodel import Session, SQLModel, create_engine, select
 
 from app.server.integration.src.models.business_action_model import BusinessAction
-from app.server.process.src.constants import (
-    END_RESULT_STATUS_APPROVED,
-    END_RESULT_STATUS_REJECTED,
-    EXECUTION_STATUS_PENDING,
-)
+from app.server.process.src.constants import EXECUTION_STATUS_PENDING
 from app.server.process.src.models.approval_model import ApprovalInstance
 from app.server.process.src.models.execution_model import BusinessExecutionRecord
 from app.server.process.src.service.business_execution_service import (
@@ -125,7 +121,6 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
 
         record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
@@ -146,31 +141,16 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
         self.assertIsNone(record.finished_at)
 
     def test_instance_without_action_code_creates_nothing(self) -> None:
-        """没有 action_code 表示只需要完成审批，不创建执行记录。"""
+        """没有 action_code 表示只需要完成审批，不创建执行记录。
 
-        instance = self.create_instance(action_code=None)
-
-        record = self.service.create_execution_record(
-            instance,
-            END_RESULT_STATUS_APPROVED,
-            self.db,
-        )
-        self.db.commit()
-
-        self.assertIsNone(record)
-        self.assertEqual(self.list_records(), [])
-
-    def test_rejected_instance_creates_nothing(self) -> None:
-        """审批被拒绝时不创建执行记录。"""
+        审批被拒绝时根本不会走到本方法（拒绝走 ``reject_instance``），所以"不建记录"
+        只剩这一种情况：申请本身没有配置业务动作。先建好动作，排除"动作不存在"的干扰。
+        """
 
         self.create_action("PAYMENT_EXECUTE")
-        instance = self.create_instance()
+        instance = self.create_instance(action_code=None)
 
-        record = self.service.create_execution_record(
-            instance,
-            END_RESULT_STATUS_REJECTED,
-            self.db,
-        )
+        record = self.service.create_execution_record(instance, self.db)
         self.db.commit()
 
         self.assertIsNone(record)
@@ -187,7 +167,6 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
 
         record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
@@ -208,7 +187,6 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
 
         record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
@@ -228,7 +206,6 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
 
         record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
@@ -248,13 +225,11 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
 
         first_record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
         second_record = self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         self.db.commit()
@@ -276,7 +251,6 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
         self.db.add(instance)
         self.service.create_execution_record(
             instance,
-            END_RESULT_STATUS_APPROVED,
             self.db,
         )
         # 模拟审批事务在提交前失败。
@@ -299,16 +273,8 @@ class ExecutionRecordCreationTestCase(unittest.TestCase):
         first_instance = self.create_instance(action_code="PAYMENT_EXECUTE")
         second_instance = self.create_instance(action_code="ORDER_CONFIRM")
 
-        self.service.create_execution_record(
-            first_instance,
-            END_RESULT_STATUS_APPROVED,
-            self.db,
-        )
-        second_record = self.service.create_execution_record(
-            second_instance,
-            END_RESULT_STATUS_APPROVED,
-            self.db,
-        )
+        self.service.create_execution_record(first_instance, self.db)
+        second_record = self.service.create_execution_record(second_instance, self.db)
         self.db.commit()
 
         by_instance = self.service.list_records(

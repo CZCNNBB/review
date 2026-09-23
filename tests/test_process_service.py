@@ -100,7 +100,7 @@ class ProcessServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                     id=end_id,
                     node_definition_id=self.seed["END"].id,
                     name="结束",
-                    config={"result_status": "APPROVED"},
+                    config={},
                     position={"x": 500, "y": 100},
                 ),
             ],

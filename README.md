@@ -200,6 +200,15 @@ backend/data/migrations/20260922_callback_credential_service_token.sql
 脚本会先检查是否存在 `ACTIVE` 凭据，发现有效凭据会主动中止，需要先撤销再执行。全新库由
 `init.sql` 直接创建 Service Token 结构，不需要执行本脚本。
 
+结束节点去掉「结束状态」配置（走到结束节点就是审批通过、流程完成）时，执行：
+
+```text
+backend/data/migrations/20260924_end_node_without_result_status.sql
+```
+
+脚本只更新 END 种子定义的 Schema 和说明，可重复执行。全新库由 `init.sql` 直接写入清理后的
+内容，不需要执行本脚本。
+
 ## 当前接口
 
 ```text

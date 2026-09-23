@@ -13,8 +13,6 @@ from sqlmodel import Session
 from app.server.process.src.constants import (
     APPROVAL_MODE_AND,
     APPROVAL_MODES,
-    END_RESULT_STATUS_APPROVED,
-    END_RESULT_STATUSES,
     INSTANCE_STATUS_APPROVED,
     INSTANCE_STATUS_ERROR,
     INSTANCE_STATUS_REJECTED,
@@ -24,6 +22,7 @@ from app.server.process.src.constants import (
     NODE_EXECUTION_STATUS_ERROR,
     NODE_EXECUTION_STATUS_REJECTED,
     NODE_TYPE_APPROVAL,
+    NODE_TYPE_CONDITION,
     NODE_TYPE_END,
     NODE_TYPE_START,
     TASK_STATUS_PENDING,
@@ -112,6 +111,24 @@ class StartNodeHandler:
         )
 
 
+class ConditionNodeHandler:
+    """条件分支节点不产生人工任务，进入后立即按出线条件选择后续节点。
+
+    和开始节点一样是"进入即离开"，区别只在语义：开始节点是流程入口，条件分支节点
+    用来把一条路拆成多条。分支条件和默认路径都保存在版本编排里，这里不读节点配置。
+    """
+
+    def handle(self, context: NodeContext) -> UUID | None:
+        """按编排条件选择后续节点。"""
+
+        return context.engine.complete_node(
+            context.instance,
+            context.graph,
+            context.execution,
+            context.db,
+        )
+
+
 class ApprovalNodeHandler:
     """人工审批节点同时创建全部审批任务，然后等待人工处理。"""
 
@@ -146,18 +163,16 @@ class ApprovalNodeHandler:
 
 
 class EndNodeHandler:
-    """结束节点直接决定实例终态，审批拒绝时不会创建业务执行任务。"""
+    """结束节点表示流程正常走完：进入即把实例置为"审批通过"。
+
+    节点本身没有配置项。审批被拒绝由审批人在人工审批节点当场结束实例（见
+    ``reject_instance``），根本走不到结束节点，所以这里不存在"拒绝出口"。
+    """
 
     def handle(self, context: NodeContext) -> UUID | None:
-        """按结束状态结束审批实例。"""
+        """以审批通过结束实例。"""
 
-        result_status = context.node.config_json.get("result_status")
-        if result_status not in END_RESULT_STATUSES:
-            raise ProcessStateError(
-                f"节点「{context.node.name}」的结束状态无效，无法结束审批"
-            )
-
-        context.engine.finish_instance(context.instance, context.execution, result_status, context.db)
+        context.engine.finish_instance(context.instance, context.execution, context.db)
         return None
 
 
@@ -165,6 +180,7 @@ class EndNodeHandler:
 NODE_HANDLERS: dict[str, NodeHandler] = {
     NODE_TYPE_START: StartNodeHandler(),
     NODE_TYPE_APPROVAL: ApprovalNodeHandler(),
+    NODE_TYPE_CONDITION: ConditionNodeHandler(),
     NODE_TYPE_END: EndNodeHandler(),
 }
 
@@ -302,15 +318,15 @@ class ApprovalEngine:
         self,
         instance: ApprovalInstance,
         execution: ApprovalNodeExecution,
-        result_status: str,
         db: Session,
     ) -> None:
-        """按结束节点的结果状态结束审批实例。
+        """走完结束节点：实例置为"审批通过"并留下执行记录。
 
-        这是实例进入最终状态的唯一汇合点：人工审批推进和 START → END 直接结束都会
-        经过这里，因此业务执行记录只能挂在本方法，不能挂在任务服务上。
+        这是实例以通过结束的唯一汇合点：人工审批推进和 START → END 直接结束都会
+        经过这里，因此业务执行记录只能挂在本方法，不能挂在任务服务上。审批被拒绝
+        走 ``reject_instance``，不产生业务执行任务。
 
-        审批通过时由同模块的业务执行服务写入 PENDING 执行记录，但只写当前 Session，
+        通过时由同模块的业务执行服务写入 PENDING 执行记录，但只写当前 Session，
         不提交事务，也不发送任何外部 HTTP 请求。
         """
 
@@ -320,15 +336,11 @@ class ApprovalEngine:
         execution.updated_at = now
         execution.result_json = {
             **execution.result_json,
-            "result_status": result_status,
+            "result_status": INSTANCE_STATUS_APPROVED,
         }
         self.repository.add_node_execution(execution, db)
 
-        instance.status = (
-            INSTANCE_STATUS_APPROVED
-            if result_status == END_RESULT_STATUS_APPROVED
-            else INSTANCE_STATUS_REJECTED
-        )
+        instance.status = INSTANCE_STATUS_APPROVED
         instance.finished_at = now
         instance.current_node_execution_id = None
         instance.updated_at = now
@@ -336,11 +348,7 @@ class ApprovalEngine:
 
         # 记录创建与实例状态更新同事务：写入失败时审批也会一起回滚，避免出现审批
         # 已经通过却没有执行任务的状态。
-        self.business_execution_service.create_execution_record(
-            instance,
-            result_status,
-            db,
-        )
+        self.business_execution_service.create_execution_record(instance, db)
 
     def fail_instance(
         self,

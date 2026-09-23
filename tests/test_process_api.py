@@ -110,7 +110,7 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                     "id": str(end_id),
                     "node_definition_id": str(self.seed["END"].id),
                     "name": "结束",
-                    "config": {"result_status": "APPROVED"},
+                    "config": {},
                     "position": {"x": 500, "y": 100},
                 },
             ],

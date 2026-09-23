@@ -328,15 +328,16 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertIn("DROP COLUMN IF EXISTS secret_ciphertext", migration_content)
 
     def test_seed_node_definitions_are_complete(self) -> None:
-        """seed 注册了 START、APPROVAL、END 三种节点能力。"""
+        """seed 注册了 START、APPROVAL、CONDITION、END 四种节点能力。"""
 
         definitions = load_seed_node_definitions()
-        self.assertEqual(set(definitions), {"START", "APPROVAL", "END"})
+        self.assertEqual(set(definitions), {"START", "APPROVAL", "CONDITION", "END"})
 
         expected_ids = {
             "START": "00000000-0000-0000-0000-000000000101",
             "APPROVAL": "00000000-0000-0000-0000-000000000102",
             "END": "00000000-0000-0000-0000-000000000103",
+            "CONDITION": "00000000-0000-0000-0000-000000000104",
         }
         for node_type, definition in definitions.items():
             self.assertEqual(str(definition.id), expected_ids[node_type])
@@ -353,7 +354,7 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertIn("ON CONFLICT (id) DO NOTHING", seed_statement)
 
     def test_seed_config_schemas_declare_required_config(self) -> None:
-        """审批和结束节点的配置 Schema 声明了必填项。"""
+        """审批节点声明了必填项；结束节点没有配置项。"""
 
         definitions = load_seed_node_definitions()
 
@@ -371,12 +372,10 @@ class InitializationSqlTestCase(unittest.TestCase):
             1,
         )
 
+        # 结束节点走到就是审批通过、流程完成，没有可配置项，也就没有必填项。
         end_schema = definitions["END"].config_schema_json
-        self.assertEqual(end_schema["required"], ["result_status"])
-        self.assertEqual(
-            end_schema["properties"]["result_status"]["enum"],
-            ["APPROVED", "REJECTED"],
-        )
+        self.assertEqual(end_schema["properties"], {})
+        self.assertNotIn("required", end_schema)
 
 
 if __name__ == "__main__":

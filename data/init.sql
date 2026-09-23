@@ -745,24 +745,35 @@ VALUES
         '00000000-0000-0000-0000-000000000103',
         'END',
         '结束',
-        '流程结束节点，进入审批通过的结束节点后创建后续业务动作任务',
+        '流程正常的最终出口，走到这里就是审批通过、流程完成，节点本身没有配置项。审批被拒绝时实例在人工审批节点当场结束，不会走到结束节点。',
         'flag',
         '{
             "type": "object",
             "title": "结束",
             "additionalProperties": false,
-            "required": ["result_status"],
-            "properties": {
-                "result_status": {
-                    "type": "string",
-                    "title": "结束状态",
-                    "description": "APPROVED 表示审批通过，REJECTED 表示审批拒绝",
-                    "enum": ["APPROVED", "REJECTED"]
-                }
-            }
+            "properties": {}
         }',
         '{
-            "result_status": {"ui:widget": "select"}
+            "ui:order": []
+        }',
+        'ENABLED',
+        NOW(),
+        NOW()
+    ),
+    (
+        '00000000-0000-0000-0000-000000000104',
+        'CONDITION',
+        '条件分支',
+        '按审批表单里的字段判断走哪条路，本身不产生审批任务。分支条件和去向在节点的分支编辑器里配置，进入后立即选路。',
+        'git-branch',
+        '{
+            "type": "object",
+            "title": "条件分支",
+            "additionalProperties": false,
+            "properties": {}
+        }',
+        '{
+            "ui:order": []
         }',
         'ENABLED',
         NOW(),
@@ -879,7 +890,7 @@ COMMENT ON COLUMN organization.department_member.updated_at IS '最后更新时�
 
 COMMENT ON TABLE process.node_definition IS '系统支持的节点能力定义及前端配置契约';
 COMMENT ON COLUMN process.node_definition.id IS '节点能力定义主键 ID';
-COMMENT ON COLUMN process.node_definition.node_type IS '后端执行类型：START、APPROVAL、END，不承担唯一标识作用';
+COMMENT ON COLUMN process.node_definition.node_type IS '后端执行类型：START、APPROVAL、CONDITION、END，不承担唯一标识作用';
 COMMENT ON COLUMN process.node_definition.name IS '节点面板展示名称';
 COMMENT ON COLUMN process.node_definition.description IS '节点能力说明';
 COMMENT ON COLUMN process.node_definition.icon IS '前端图标标识';

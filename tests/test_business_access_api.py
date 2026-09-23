@@ -222,7 +222,7 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             id=uuid4(),
             node_definition_id=self.seed[NODE_TYPE_END].id,
             name="结束",
-            config={"result_status": "APPROVED"},
+            config={},
             position={"x": 500, "y": 100},
         )
 
