@@ -14,7 +14,7 @@
 - `app/server/process/docs/审批流模块设计.md`：节点能力、流程编排、审批人和租户使用权设计。
 - `app/server/process/docs/审批流运行模块设计.md`：显式版本、审批实例、节点执行、任务和审批记录设计。
 - `app/server/process/docs/业务执行模块设计.md`：审批通过后的单次业务调用、Service Token 和执行记录设计。
-- `app/server/process/docs/README.md`：审批流维护模块的实现说明，包含种子节点定义、校验规则码和 JSON 字段写入约束。
+- `app/server/process/docs/README.md`：审批流维护模块的实现说明，包含节点类型清单与处理器、校验规则码和 JSON 字段写入约束。
 - `app/server/integration/docs/业务接入模块设计.md`：业务动作、租户授权、审批使用记录和发起审批事务设计。
 - `app/server/integration/docs/业务接入接口说明.md`：业务接入接口清单、API Key 使用方式、错误码和联调步骤。
 - 其他模块的设计文档统一存放在各自 `app/server/<module>/docs/` 下。
@@ -182,6 +182,7 @@ backend/data/init.sql
 该文件是数据库结构的唯一来源，应用代码不包含任何建库动作。首次接入或结构有更新时，
 在 PostgreSQL 客户端（psql、pgAdmin 或 IDE 的数据库工具）里连接目标数据库，执行
 该文件的全部内容。脚本中所有语句都是幂等的，可以重复执行，不会影响已有数据。
+`init.sql` 只建结构，不写表数据：节点能力定义的清单在代码里（见下），由应用启动时同步。
 
 新增模块时向该文件追加 Schema、表、外键、索引和 `COMMENT` 注释，保持注释与结构一致。
 正式环境出现结构变更后应引入数据库迁移工具，`init.sql` 继续负责全新环境首次建库。
@@ -203,14 +204,33 @@ backend/data/migrations/20260922_callback_credential_service_token.sql
 脚本会先检查是否存在 `ACTIVE` 凭据，发现有效凭据会主动中止，需要先撤销再执行。全新库由
 `init.sql` 直接创建 Service Token 结构，不需要执行本脚本。
 
-结束节点去掉「结束状态」配置（走到结束节点就是审批通过、流程完成）时，执行：
+结束节点去掉「结束状态」配置（走到结束节点就是审批通过、流程完成）时执行过：
 
 ```text
 backend/data/migrations/20260924_end_node_without_result_status.sql
 ```
 
-脚本只更新 END 种子定义的 Schema 和说明，可重复执行。全新库由 `init.sql` 直接写入清理后的
-内容，不需要执行本脚本。
+脚本只更新 END 节点定义的 Schema 和说明。节点定义现在跟着代码走、启动时自动同步，这类
+只改定义的脚本（含 `20260923_condition_node_definition.sql`）只对"当时还没启动过新版后端"
+的库有意义，新环境启动一次即可，不需要再执行。文件保留作为变更记录。
+
+### 节点能力定义跟着代码走
+
+节点类型（开始、人工审批、条件分支、结束）的清单维护在：
+
+```text
+backend/app/server/process/src/node_catalog.py
+```
+
+名称、图标、配置 Schema 和固定 id 都在这里；行为在 `engine/nodes/` 下，一类一个处理器文件，
+注册表在 `engine/nodes/registry.py`。应用启动时会把这份清单同步进 `process.node_definition`：
+缺的类型补行、被手工改过的改回、代码里已经没有的类型停用（不删除，历史版本节点还引用着）。
+
+由此：
+
+- 不要手工改这张表，改了下次启动会被改回；配置台里的「节点定义」页因此只读；
+- 新增一种节点类型 = 新建处理器文件 + 注册表加一行 + 清单加一条，不用改 `init.sql`；
+- 配置 Schema 变化只影响之后保存/发布的草稿，已经在跑的实例按发布时固化的版本节点推进。
 
 ## 当前接口
 
@@ -241,10 +261,8 @@ POST /api/admin/departments/{department_id}/members/{person_id}/disable
 POST /api/admin/tenants/{tenant_id}/persons/bind
 GET  /api/admin/tenants/{tenant_id}/persons
 PATCH /api/admin/tenants/{tenant_id}/persons/{person_id}/binding
-POST /api/admin/node-definitions
 GET  /api/admin/node-definitions
 GET  /api/admin/node-definitions/{node_definition_id}
-PATCH /api/admin/node-definitions/{node_definition_id}
 POST /api/admin/processes
 GET  /api/admin/processes
 GET  /api/admin/processes/{process_id}

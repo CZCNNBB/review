@@ -182,29 +182,3 @@ class ProcessRepository:
             version_id: node_count
             for version_id, node_count in db.exec(statement).all()
         }
-
-    def has_enabled_process_reference(
-        self,
-        node_definition_id: UUID,
-        db: Session,
-    ) -> bool:
-        """判断节点定义是否被任意已启用流程的当前版本引用。"""
-
-        statement = (
-            select(ApprovalProcessVersionNode.id)
-            .join(
-                ApprovalProcessVersion,
-                ApprovalProcessVersion.id
-                == ApprovalProcessVersionNode.process_version_id,
-            )
-            .join(
-                ApprovalProcess,
-                ApprovalProcess.current_version_id == ApprovalProcessVersion.id,
-            )
-            .where(
-                ApprovalProcessVersionNode.node_definition_id == node_definition_id,
-                ApprovalProcess.status == PROCESS_STATUS_ENABLED,
-            )
-            .limit(1)
-        )
-        return db.exec(statement).first() is not None

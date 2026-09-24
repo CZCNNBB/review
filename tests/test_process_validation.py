@@ -1,14 +1,14 @@
 """审批流完整性校验引擎单元测试。
 
-本文件只测试纯函数，不需要数据库连接。节点定义直接使用 init.sql 里注册的
-seed 配置 Schema，保证测试对象和生产环境完全一致。
+本文件只测试纯函数，不需要数据库连接。节点定义直接用代码清单里的配置 Schema，
+保证测试对象和生产环境完全一致。
 """
 
 import unittest
 from dataclasses import replace
 from uuid import UUID, uuid4
 
-from tests.process_test_helpers import load_seed_node_definitions
+from tests.process_test_helpers import load_builtin_node_definitions
 from app.server.process.src.constants import (
     RULE_APPROVAL_MODE_INVALID,
     RULE_APPROVER_DISABLED,
@@ -69,9 +69,9 @@ class ValidationTestCase(unittest.TestCase):
     """校验引擎测试基类，提供流程视图构造辅助。"""
 
     def setUp(self) -> None:
-        """读取 seed 节点定义并准备默认审批人。"""
+        """读取内置节点定义并准备默认审批人。"""
 
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
         self.definitions = {definition.id: definition for definition in self.seed.values()}
         self.person_id = uuid4()
         self.person_statuses = {self.person_id: "ENABLED"}

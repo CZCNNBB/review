@@ -40,7 +40,7 @@ from app.server.process.src.schemas.process_schema import (
 from app.server.process.src.service.process_service import ProcessService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -52,7 +52,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
 
         self.db: Session = self.open_session()
         self.process_service = ProcessService()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
 
         # 运行接口不依赖租户能力，这里显式关闭租户开关覆盖全局模式。
         self.previous_tenancy_enabled = os.environ.get("TENANCY_ENABLED")

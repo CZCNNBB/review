@@ -1,4 +1,9 @@
-"""节点能力定义管理接口。"""
+"""节点能力定义查询接口。
+
+只读：节点类型跟着代码走，清单在 ``src/node_catalog.py``，应用启动时由
+``service/node_definition_sync.py`` 同步进库。管理端改这里没有意义（下次启动会被改回），
+所以不提供增改接口 —— 要加类型得后端加处理器与清单条目。
+"""
 
 from uuid import UUID
 
@@ -9,14 +14,9 @@ from app.common.db.postgres_db import get_postgres_engine
 from app.common.schemas.result import Result
 from app.common.security import verify_admin_key
 from app.server.process.src.schemas.node_definition_schema import (
-    NodeDefinitionCreateRequest,
     NodeDefinitionResponse,
-    NodeDefinitionUpdateRequest,
 )
-from app.server.process.src.service.exceptions import (
-    NodeDefinitionNotFoundError,
-    ProcessConflictError,
-)
+from app.server.process.src.service.exceptions import NodeDefinitionNotFoundError
 from app.server.process.src.service.node_definition_service import (
     NodeDefinitionService,
 )
@@ -31,29 +31,7 @@ def raise_node_definition_http_error(exc: Exception) -> None:
 
     if isinstance(exc, NodeDefinitionNotFoundError):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
-    if isinstance(exc, ProcessConflictError):
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     raise exc
-
-
-@router.post(
-    "/admin/node-definitions",
-    response_model=Result[NodeDefinitionResponse],
-    status_code=status.HTTP_201_CREATED,
-    dependencies=[Depends(verify_admin_key)],
-    summary="创建节点能力定义",
-)
-def create_node_definition(
-    request: NodeDefinitionCreateRequest,
-    db: Session = Depends(get_postgres_engine),
-) -> Result[NodeDefinitionResponse]:
-    """注册一种系统支持的节点能力，供流程设计器拖入画布。"""
-
-    try:
-        definition = node_definition_service.create_definition(request, db)
-        return Result.success(NodeDefinitionResponse.model_validate(definition))
-    except ProcessConflictError as exc:
-        raise_node_definition_http_error(exc)
 
 
 @router.get(
@@ -91,31 +69,4 @@ def get_node_definition(
         definition = node_definition_service.get_definition(node_definition_id, db)
         return Result.success(NodeDefinitionResponse.model_validate(definition))
     except NodeDefinitionNotFoundError as exc:
-        raise_node_definition_http_error(exc)
-
-
-@router.patch(
-    "/admin/node-definitions/{node_definition_id}",
-    response_model=Result[NodeDefinitionResponse],
-    dependencies=[Depends(verify_admin_key)],
-    summary="更新节点能力定义",
-)
-def update_node_definition(
-    node_definition_id: UUID,
-    request: NodeDefinitionUpdateRequest,
-    db: Session = Depends(get_postgres_engine),
-) -> Result[NodeDefinitionResponse]:
-    """更新节点定义的名称、说明、图标、配置 Schema 或启停状态。
-
-    node_type 不可修改，需要改变后端执行类型时应新增一条节点定义。
-    """
-
-    try:
-        definition = node_definition_service.update_definition(
-            node_definition_id,
-            request,
-            db,
-        )
-        return Result.success(NodeDefinitionResponse.model_validate(definition))
-    except (NodeDefinitionNotFoundError, ProcessConflictError) as exc:
         raise_node_definition_http_error(exc)

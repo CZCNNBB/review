@@ -74,10 +74,8 @@ PUT /api/admin/process-versions/{version_id}/graph 是整图唯一写入口。�
 ## 5. 接口清单
 
 ~~~text
-POST   /api/admin/node-definitions
 GET    /api/admin/node-definitions
 GET    /api/admin/node-definitions/{node_definition_id}
-PATCH  /api/admin/node-definitions/{node_definition_id}
 
 POST   /api/admin/processes
 GET    /api/admin/processes
@@ -149,6 +147,17 @@ CONDITION  进入后立即按出线条件选路，不产生人工任务
 APPROVAL   为全部审批人同时创建 PENDING 任务，实例停在该节点
 END        把实例置为 APPROVED（走到这里就是审批通过）、记录结束时间
 ~~~
+
+处理器一类一个文件放在 `engine/nodes/` 下，注册表集中在 `engine/nodes/registry.py`，
+类型清单（名称、图标、配置 Schema、固定 id）在 `src/node_catalog.py`。新增一种节点类型：
+
+1. 在 `engine/nodes/` 新建处理器文件，实现 `handle(context) -> UUID | None`；
+2. 在 `registry.py` 的 `NODE_HANDLERS` 里加一行；
+3. 在 `node_catalog.py` 的 `NODE_TYPES` 里加一条（挑一个固定 UUID 当 id）。
+
+清单是节点类型的唯一真相：白名单 `SUPPORTED_NODE_TYPES` 与接口校验正则由它派生，注册表在
+import 时断言两边指向同一批类型，应用启动时由 `service/node_definition_sync.py` 把清单写进
+`process.node_definition` —— 所以不用手改数据库，也不用改 `init.sql`。
 
 推进入口是引擎内部的单次循环：进入节点、交给处理器、处理器返回下一个节点 ID 或
 None。None 表示流程需要等待人工处理。已发布版本禁止成环，循环仍然保留步数上限，

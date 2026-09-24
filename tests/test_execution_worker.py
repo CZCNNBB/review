@@ -50,7 +50,7 @@ from app.server.process.src.service.approval_instance_service import (
 from app.server.process.src.service.process_service import ProcessService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -522,7 +522,7 @@ class WorkerSkipLockedTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.db: Session = self.open_session()
         self.process_service = ProcessService()
         self.instance_service = ApprovalInstanceService()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
         self.record_ids: list[UUID] = []
         self.handled_requests: list[httpx.Request] = []
         self.workers: list[BusinessExecutionWorker] = []

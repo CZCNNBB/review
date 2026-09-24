@@ -20,7 +20,7 @@ from app.server.process.src.service.exceptions import (
 from app.server.process.src.service.process_service import ProcessService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -32,7 +32,7 @@ class ProcessServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
 
         self.db: Session = self.open_session()
         self.service = ProcessService()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
         person = OrganizationService().create_person(
             PersonCreateRequest(name=f"流程版本测试人员-{uuid4().hex[:8]}"),
             self.db,

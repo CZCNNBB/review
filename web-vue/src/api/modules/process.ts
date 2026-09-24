@@ -9,16 +9,6 @@ export interface ProcessInput {
   description?: string | null
 }
 
-export interface NodeDefinitionInput {
-  node_type?: string
-  name: string
-  description?: string | null
-  icon?: string | null
-  config_schema_json: JSONSchema
-  ui_schema_json: Record<string, unknown>
-  status?: string
-}
-
 /** 保存整图的载荷，字段与后端 ProcessGraphSaveRequest 对应（revision 是乐观锁）。 */
 export interface GraphSaveInput {
   revision: number
@@ -59,11 +49,6 @@ export const processApi = {
 
   publish: (versionId: string) => api.post<ProcessVersion>(endpoints.publishVersion(versionId)),
 
+  // 节点定义只读：清单跟着后端代码走，启动时由后端同步进库，控制台不再改写
   nodeDefinitions: (limit = 100) => api.get<NodeDefinition[]>(endpoints.nodeDefinitions(limit)),
-
-  createNodeDefinition: (input: NodeDefinitionInput) =>
-    api.post<NodeDefinition>(endpoints.nodeDefinitions(1).split('?')[0], input),
-
-  updateNodeDefinition: (id: string, input: Partial<NodeDefinitionInput>) =>
-    api.patch<NodeDefinition>(endpoints.nodeDefinition(id), input),
 }

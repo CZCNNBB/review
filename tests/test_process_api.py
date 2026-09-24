@@ -13,7 +13,7 @@ from app.server.organization.src.schemas.organization_schema import PersonCreate
 from app.server.organization.src.service.organization_service import OrganizationService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -27,7 +27,7 @@ class ProcessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         os.environ["APPROVAL_ADMIN_KEY"] = "test-admin-key"
         self.admin_headers = {"X-Admin-Key": "test-admin-key"}
         self.db: Session = self.open_session()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
 
         person = OrganizationService().create_person(
             PersonCreateRequest(name=f"版本接口测试人员-{uuid4().hex[:8]}"),

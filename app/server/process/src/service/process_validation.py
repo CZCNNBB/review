@@ -51,8 +51,8 @@ from app.server.process.src.constants import (
     RULE_START_AS_TARGET,
     RULE_START_COUNT_INVALID,
     RULE_TOO_MANY_OUTGOING_CONNECTIONS,
-    SUPPORTED_NODE_TYPES,
 )
+from app.server.process.src.node_catalog import SUPPORTED_NODE_TYPES
 from app.server.process.src.service.exceptions import ProcessValidationError
 from app.server.process.src.utils.json_schema import (
     JSON_TYPE_NAMES,

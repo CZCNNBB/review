@@ -55,7 +55,7 @@ from app.server.process.src.service.exceptions import (
 from app.server.process.src.service.process_service import ProcessService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -69,7 +69,7 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.process_service = ProcessService()
         self.instance_service = ApprovalInstanceService()
         self.task_service = ApprovalTaskService()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
 
         self.applicant_id = self.create_person("运行测试发起人")
         self.approver_a = self.create_person("运行测试审批人A")

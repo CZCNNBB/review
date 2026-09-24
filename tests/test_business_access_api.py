@@ -54,7 +54,7 @@ from app.server.tenant.src.service.tenant_binding_service import TenantBindingSe
 from app.server.tenant.src.service.tenant_service import TenantService
 from tests.process_test_helpers import (
     DatabaseTestCaseMixin,
-    load_seed_node_definitions,
+    load_builtin_node_definitions,
 )
 
 
@@ -91,7 +91,7 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         self.tenant_service = TenantService()
         self.binding_service = TenantBindingService()
         self.action_service = BusinessActionService()
-        self.seed = load_seed_node_definitions()
+        self.seed = load_builtin_node_definitions()
 
         self.previous_tenancy_enabled = os.environ.get("TENANCY_ENABLED")
         self.previous_admin_key = os.environ.get("APPROVAL_ADMIN_KEY")

@@ -12,20 +12,17 @@ NODE_TYPE_APPROVAL = "APPROVAL"
 NODE_TYPE_CONDITION = "CONDITION"
 NODE_TYPE_END = "END"
 
-# 后端已经实现执行器的节点类型。新增节点定义时 node_type 必须落在这个集合内。
-# 注意 NODE_TYPE_PATTERN 是第二处白名单，两者必须一起改，否则创建节点定义的接口会直接 422。
-SUPPORTED_NODE_TYPES = frozenset(
-    {NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_CONDITION, NODE_TYPE_END}
-)
-NODE_TYPE_PATTERN = r"^(START|APPROVAL|CONDITION|END)$"
+# 节点类型的清单不在这里：处理器在 engine/nodes/，声明（名字、图标、配置 Schema，
+# 以及库里那一行的固定 id）在 src/node_catalog.py，白名单 SUPPORTED_NODE_TYPES 由清单派生。
+# 这里只保留类型名常量，供各处理器引用。
+#   新增一种节点类型 = 新建 engine/nodes/<类型>.py + 在 registry 加一行 + 在清单加一条。
 
 # 分支只允许从条件分支节点出去，其余节点的出线数量上限见 RULE_TOO_MANY_OUTGOING_CONNECTIONS。
 BRANCHING_NODE_TYPES = frozenset({NODE_TYPE_CONDITION})
 
-# 节点定义保存的是能力元数据，node_type 仅表示后端执行分类，不承担唯一标识作用。
+# 节点定义行的状态。定义由代码清单在启动时同步写入，一类一行（见 node_definition_sync）。
 NODE_DEFINITION_STATUS_ENABLED = "ENABLED"
 NODE_DEFINITION_STATUS_DISABLED = "DISABLED"
-NODE_DEFINITION_STATUS_PATTERN = r"^(ENABLED|DISABLED)$"
 
 # ---------------------------------------------------------------------------
 # 流程状态

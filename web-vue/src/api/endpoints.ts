@@ -40,9 +40,8 @@ export const endpoints = {
   validateVersion: (id: string) => `${ADMIN}/process-versions/${id}/validate`,
   publishVersion: (id: string) => `${ADMIN}/process-versions/${id}/publish`,
 
-  // 节点定义
+  // 节点定义（只读：清单在代码里，后端启动时同步）
   nodeDefinitions: (limit = 100) => `${ADMIN}/node-definitions?limit=${limit}`,
-  nodeDefinition: (id: string) => `${ADMIN}/node-definitions/${id}`,
 
   // 业务动作与执行
   businessActions: (limit = 200) => `${ADMIN}/business-actions?limit=${limit}`,

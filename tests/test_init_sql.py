@@ -2,21 +2,18 @@
 
 data/init.sql 是数据库结构的唯一来源，由人工在数据库客户端执行，应用代码不再
 包含任何建库动作。测试在这里提前拦住两类问题：脚本被写坏导致无法整体执行，以及
-seed 节点定义缺失或内容不正确。
+表、索引、注释写漏。节点能力定义的表数据不在这里 —— 清单在代码里，启动时同步。
 """
 
 import unittest
 
-from tests.process_test_helpers import (
-    INITIALIZATION_SQL_PATH,
-    load_seed_node_definitions,
-)
+from tests.process_test_helpers import INITIALIZATION_SQL_PATH
 
 
 def split_sql_statements(sql_content: str) -> list[str]:
     """按分号拆分初始化脚本，用于断言脚本可以逐条执行。
 
-    有些数据库客户端会按分号拆分脚本后逐条提交，因此 seed 语句内部不要出现分号。
+    有些数据库客户端会按分号拆分脚本后逐条提交，因此语句内部不要出现分号。
     """
 
     return [
@@ -27,7 +24,7 @@ def split_sql_statements(sql_content: str) -> list[str]:
 
 
 class InitializationSqlTestCase(unittest.TestCase):
-    """验证审批流相关的建表语句和 seed 数据。"""
+    """验证审批流相关的建表语句、索引和注释。"""
 
     def setUp(self) -> None:
         """读取初始化脚本内容。"""
@@ -327,55 +324,10 @@ class InitializationSqlTestCase(unittest.TestCase):
         self.assertIn("DROP COLUMN IF EXISTS key_id", migration_content)
         self.assertIn("DROP COLUMN IF EXISTS secret_ciphertext", migration_content)
 
-    def test_seed_node_definitions_are_complete(self) -> None:
-        """seed 注册了 START、APPROVAL、CONDITION、END 四种节点能力。"""
+    def test_node_definitions_are_not_seeded_here(self) -> None:
+        """脚本不再插入节点定义，避免出现第二份清单。"""
 
-        definitions = load_seed_node_definitions()
-        self.assertEqual(set(definitions), {"START", "APPROVAL", "CONDITION", "END"})
-
-        expected_ids = {
-            "START": "00000000-0000-0000-0000-000000000101",
-            "APPROVAL": "00000000-0000-0000-0000-000000000102",
-            "END": "00000000-0000-0000-0000-000000000103",
-            "CONDITION": "00000000-0000-0000-0000-000000000104",
-        }
-        for node_type, definition in definitions.items():
-            self.assertEqual(str(definition.id), expected_ids[node_type])
-            self.assertEqual(definition.status, "ENABLED")
-
-    def test_seed_statement_is_idempotent(self) -> None:
-        """seed 使用 ON CONFLICT DO NOTHING，重复执行不会失败。"""
-
-        seed_statement = next(
-            statement
-            for statement in self.statements
-            if "INSERT INTO process.node_definition" in statement
-        )
-        self.assertIn("ON CONFLICT (id) DO NOTHING", seed_statement)
-
-    def test_seed_config_schemas_declare_required_config(self) -> None:
-        """审批节点声明了必填项；结束节点没有配置项。"""
-
-        definitions = load_seed_node_definitions()
-
-        approval_schema = definitions["APPROVAL"].config_schema_json
-        self.assertEqual(
-            sorted(approval_schema["required"]),
-            ["approval_mode", "approvers"],
-        )
-        self.assertEqual(
-            approval_schema["properties"]["approval_mode"]["enum"],
-            ["AND", "OR"],
-        )
-        self.assertEqual(
-            approval_schema["properties"]["approvers"]["minItems"],
-            1,
-        )
-
-        # 结束节点走到就是审批通过、流程完成，没有可配置项，也就没有必填项。
-        end_schema = definitions["END"].config_schema_json
-        self.assertEqual(end_schema["properties"], {})
-        self.assertNotIn("required", end_schema)
+        self.assertNotIn("INSERT INTO process.node_definition", self.sql_content)
 
 
 if __name__ == "__main__":

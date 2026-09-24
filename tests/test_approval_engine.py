@@ -13,7 +13,7 @@ from app.server.process.src.engine.condition import (
     select_next_connection,
     values_equal,
 )
-from app.server.process.src.engine.runner import (
+from app.server.process.src.engine.nodes import (
     OUTCOME_APPROVED,
     OUTCOME_PENDING,
     OUTCOME_REJECTED,

@@ -18,13 +18,13 @@ from app.server.process.src.constants import (
     TASK_STATUSES,
 )
 from app.server.process.src.engine.graph import build_version_graph
-from app.server.process.src.engine.runner import (
+from app.server.process.src.engine.nodes import (
     OUTCOME_APPROVED,
     OUTCOME_PENDING,
     OUTCOME_REJECTED,
-    ApprovalEngine,
     resolve_approval_outcome,
 )
+from app.server.process.src.engine.runner import ApprovalEngine
 from app.server.process.src.models.approval_model import (
     ApprovalInstance,
     ApprovalNodeExecution,

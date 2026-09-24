@@ -2,9 +2,16 @@
 
 from uuid import UUID
 
+from sqlalchemy import case
 from sqlmodel import Session, select
 
 from app.server.process.src.models.process_model import NodeDefinition
+from app.server.process.src.node_catalog import NODE_TYPES
+
+# 清单里的声明顺序就是列表顺序（开始 → 人工审批 → 条件分支 → 结束），画布的节点面板
+# 和「节点定义」页都按这个顺序读。清单里没有的类型（历史遗留或已下线的）排在最后。
+_ORDER_MAP = {node_type: index for index, node_type in enumerate(NODE_TYPES)}
+_CATALOG_ORDER = case(_ORDER_MAP, value=NodeDefinition.node_type, else_=len(_ORDER_MAP))
 
 
 class NodeDefinitionRepository:
@@ -32,11 +39,11 @@ class NodeDefinitionRepository:
         offset: int,
         limit: int,
     ) -> list[NodeDefinition]:
-        """按创建时间倒序分页查询节点能力定义。"""
+        """按清单顺序分页查询节点能力定义，同一类型内新行在前。"""
 
         statement = (
             select(NodeDefinition)
-            .order_by(NodeDefinition.created_at.desc())
+            .order_by(_CATALOG_ORDER, NodeDefinition.created_at.desc())
             .offset(offset)
             .limit(limit)
         )

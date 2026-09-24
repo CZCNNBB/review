@@ -12,6 +12,7 @@ if __package__ in {None, ""}:
         sys.path.insert(0, backend_directory_text)
 
 import app.bootstrap  # 初始化异步环境，必须在其他项目模块之前导入
+from app.bootstrap import configure_logging
 
 from contextlib import asynccontextmanager
 
@@ -25,18 +26,27 @@ from app.server.process.src.execution.bootstrap import (
     start_business_execution_worker,
     stop_business_execution_worker,
 )
+from app.server.process.src.service.node_definition_sync import (
+    sync_node_definitions_on_startup,
+)
 from app.server.tenant.api import router as tenant_router
 import uvicorn
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    """应用启动时启动业务执行 Worker，关闭时有序停止。
+    """应用启动时对齐节点定义并启动业务执行 Worker，关闭时有序停止。
+
+    节点类型跟着代码走，启动时把代码里的清单同步进数据库，配置台与流程校验读到的
+    就是当前代码支持的类型；同步失败只记日志，不拦启动。
 
     Worker 在独立线程中轮询，不占用当前事件循环。多个 Uvicorn 进程各自启动一个
     Worker，重复领取由 PostgreSQL 的 FOR UPDATE SKIP LOCKED 兜住。
     """
 
+    # 先把日志接上：启动阶段这几件事都只记日志，没配置的话 INFO 看不见
+    configure_logging()
+    sync_node_definitions_on_startup()
     worker = start_business_execution_worker()
     try:
         yield

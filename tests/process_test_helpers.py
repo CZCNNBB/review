@@ -1,7 +1,5 @@
-"""审批流模块测试共用辅助：读取 seed 节点定义和准备数据库会话。"""
+"""审批流模块测试共用辅助：内置节点定义和数据库会话。"""
 
-import json
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -12,71 +10,60 @@ from sqlalchemy.exc import SQLAlchemyError
 from sqlmodel import Session
 
 from app.common.db.postgres_db import engine
+from app.server.process.src.constants import NODE_DEFINITION_STATUS_ENABLED
+from app.server.process.src.node_catalog import NODE_TYPES
+from app.server.process.src.service.node_definition_sync import sync_node_definitions
 
 
 INITIALIZATION_SQL_PATH = (
     Path(__file__).resolve().parents[1] / "data" / "init.sql"
 )
 
-# 匹配 seed 语句里的单条 VALUES 记录。
-_SEED_VALUE_PATTERN = re.compile(
-    r"\(\s*"
-    r"'([0-9a-fA-F-]{36})',\s*"
-    r"'([A-Z]+)',\s*"
-    r"'([^']*)',\s*"
-    r"'([^']*)',\s*"
-    r"'([^']*)',\s*"
-    r"'(.*?)',\s*"
-    r"'(.*?)',\s*"
-    r"'(ENABLED|DISABLED)'",
-    re.DOTALL,
-)
-
 
 @dataclass(frozen=True)
-class SeedNodeDefinition:
-    """从 init.sql 解析出的节点能力定义。"""
+class BuiltinNodeDefinition:
+    """代码清单里的一个内置节点类型，字段对应数据库里的节点定义行。"""
 
     id: UUID
     node_type: str
     name: str
+    description: str
+    icon: str
     config_schema_json: dict[str, Any]
     ui_schema_json: dict[str, Any]
     status: str
 
 
-def load_seed_node_definitions() -> dict[str, SeedNodeDefinition]:
-    """解析 init.sql 中的 seed 节点定义，按 node_type 建索引。
+def load_builtin_node_definitions() -> dict[str, BuiltinNodeDefinition]:
+    """按代码里的节点类型清单构造内置节点定义，按 node_type 建索引。
 
-    测试直接使用生产环境真正注册的配置 Schema，避免测试里另写一份而产生漂移。
+    清单的唯一真相在 ``src/node_catalog.py``（应用启动时会同步进数据库），测试读同一份，
+    避免另写一份配置 Schema 而产生漂移。
     """
 
-    sql_content = INITIALIZATION_SQL_PATH.read_text(encoding="utf-8")
-    seed_statement = None
-    for statement in sql_content.split(";"):
-        if "INSERT INTO process.node_definition" in statement:
-            seed_statement = statement
-            break
-
-    if seed_statement is None:
-        raise AssertionError("init.sql 中缺少 process.node_definition 的 seed 语句")
-
-    definitions: dict[str, SeedNodeDefinition] = {}
-    for match in _SEED_VALUE_PATTERN.finditer(seed_statement):
-        node_type = match.group(2)
-        definitions[node_type] = SeedNodeDefinition(
-            id=UUID(match.group(1)),
+    return {
+        node_type: BuiltinNodeDefinition(
+            id=spec.id,
             node_type=node_type,
-            name=match.group(3),
-            config_schema_json=json.loads(match.group(6)),
-            ui_schema_json=json.loads(match.group(7)),
-            status=match.group(8),
+            name=spec.name,
+            description=spec.description,
+            icon=spec.icon,
+            config_schema_json=spec.config_schema_json,
+            ui_schema_json=spec.ui_schema_json,
+            status=NODE_DEFINITION_STATUS_ENABLED,
         )
+        for node_type, spec in NODE_TYPES.items()
+    }
 
-    if not definitions:
-        raise AssertionError("init.sql 的 seed 语句没有解析出任何节点定义")
 
-    return definitions
+def ensure_builtin_node_definitions(session: Session) -> None:
+    """把代码清单同步进测试库，保证内置定义行存在。
+
+    节点定义不再由 init.sql seed（清单已经搬进代码），而版本节点外键指向这些定义行，
+    所以建流程版本之前必须先把它们补齐。这与应用启动时做的是同一件事。
+    """
+
+    sync_node_definitions(session)
 
 
 class DatabaseTestCaseMixin:
@@ -88,9 +75,12 @@ class DatabaseTestCaseMixin:
     engine = engine
 
     def open_session(self) -> Session:
-        """创建测试使用的数据库会话。"""
+        """创建测试使用的数据库会话，并保证内置节点定义已在库中。"""
 
         self._session = Session(self.engine)
+        # 节点定义由代码清单在启动时同步（init.sql 不再 seed），而版本节点的外键指向
+        # 这些定义行，所以测试也要先补齐 —— 否则只有"应用启动过"的库才能跑通。
+        ensure_builtin_node_definitions(self._session)
         self._created_process_ids: list[UUID] = []
         self._created_node_definition_ids: list[UUID] = []
         self._created_person_ids: list[UUID] = []
