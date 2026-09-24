@@ -3,35 +3,33 @@ import { ElButton } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
 import { orgApi } from '@/api/modules/org'
-import type { Person, TenantPersonBinding } from '@/api/types'
+import type { TenantPersonBinding } from '@/api/types'
 import AppDialog from '@/components/common/AppDialog.vue'
 import DynamicForm from '@/components/form/DynamicForm.vue'
 import { errorMessageOf } from '@/composables/useConfirm'
-import { shortId } from '@/utils/format'
+import { usePersonDirectory } from '@/composables/usePersonDirectory'
 import type { DynamicFieldSpec } from '@/utils/nodeConfigForm'
 import { toastOk } from '@/utils/notify'
 
 // 把全局人员绑到租户上，顺带记下他在业务系统里的工号与账号。
-// 人员选项由页面传入：旧版闭包读全局 persons，这里显式传，弹窗不依赖页面状态。
 const open = defineModel<boolean>('open', { default: false })
 
 const props = defineProps<{
   tenantId: string
-  persons: Person[]
 }>()
 
 const emit = defineEmits<{ (event: 'saved', binding: TenantPersonBinding): void }>()
+
+// 人员候选走人员目录（带部门标签），不再由页面传 persons 进来
+const directory = usePersonDirectory()
 
 const fields = computed<DynamicFieldSpec[]>(() => [
   {
     name: 'person_id',
     label: '人员 *',
-    type: 'select',
+    type: 'person-select',
     required: true,
-    options: props.persons.map((person) => ({
-      value: person.id,
-      label: `${person.name}（${shortId(person.id)}）`,
-    })),
+    options: directory.options.value,
   },
   {
     name: 'employee_no',

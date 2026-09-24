@@ -103,19 +103,26 @@ function previewOf(definition: NodeDefinition): { variant: string; summary: stri
     </div>
 
     <!-- 拖拽影像：常驻在屏幕外。setDragImage 要求元素已在 DOM 中，
-         而 Vue 的更新是异步的，所以不能等 dragstart 时再挂出来。 -->
+         而 Vue 的更新是异步的，所以不能等 dragstart 时再挂出来。
+         外层 flow-drag-ghost 负责挪到屏幕外（position: fixed; left: -9999px），
+         少了它这些卡片会直接排在面板里露出来 —— 面板底部那一堆"奇怪的卡片"就是它们。 -->
     <div
       v-for="definition in usable"
       :key="`ghost-${definition.id}`"
-      :ref="(el) => registerGhost(definition.id, el as HTMLElement | null)"
-      class="flow__node flow__node--ghost"
-      :class="`flow__node--${previewOf(definition).variant}`"
+      class="flow-drag-ghost"
+      aria-hidden="true"
     >
-      <div class="flow__node-head">
-        <span class="flow__node-type">{{ definition.name }}</span>
-        <span class="flow__node-name">{{ definition.name }}</span>
+      <div
+        :ref="(el) => registerGhost(definition.id, el as HTMLElement | null)"
+        class="flow__node flow__node--ghost"
+        :class="`flow__node--${previewOf(definition).variant}`"
+      >
+        <div class="flow__node-head">
+          <span class="flow__node-type">{{ definition.name }}</span>
+          <span class="flow__node-name">{{ definition.name }}</span>
+        </div>
+        <div class="flow__node-desc">{{ previewOf(definition).summary }}</div>
       </div>
-      <div class="flow__node-desc">{{ previewOf(definition).summary }}</div>
     </div>
   </div>
 </template>

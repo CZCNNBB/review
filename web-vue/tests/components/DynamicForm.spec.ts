@@ -28,6 +28,40 @@ function mountForm(values: Record<string, unknown>) {
 }
 
 describe('通用动态表单', () => {
+  /**
+   * person-select 是选人专用的字段类型：渲染成 PersonSelect（可搜索 + 部门标签），
+   * 不是裸的多选框。这条钉住字段类型到控件的接线。
+   */
+  it('person-select 字段渲染成选人控件', async () => {
+    const personFields: DynamicFieldSpec[] = [
+      {
+        name: 'approvers',
+        label: '审批人 *',
+        type: 'person-select',
+        required: true,
+        options: [{ value: 'p1', label: '李清波', departments: ['技术部门'] }],
+      },
+    ]
+    const wrapper = mount(DynamicForm, {
+      props: {
+        fields: personFields,
+        modelValue: { approvers: [] },
+        'onUpdate:modelValue': () => {},
+      },
+      attachTo: document.body,
+    })
+
+    await wrapper.find('.el-select__wrapper').trigger('click')
+    await new Promise((resolve) => setTimeout(resolve, 0))
+
+    const option = document.querySelector('.el-select-dropdown__item')
+    expect(option?.textContent).toContain('李清波')
+    expect(option?.querySelector('.tag')?.textContent).toContain('技术部门')
+
+    wrapper.unmount()
+    document.body.innerHTML = ''
+  })
+
   it('按字段描述符渲染控件，并把当前取值填进去', () => {
     const wrapper = mountForm({ name: '财务审批', approval_mode: 'OR', approvers: [] })
     const html = wrapper.html()

@@ -56,6 +56,9 @@ test.describe('版本编辑器', () => {
     // 离开编辑器路由：工作副本丢弃，回来是接口里的原始数据
     await page.locator('.rail__item').filter({ hasText: '审批流' }).click()
     await expect(page).toHaveURL(/#\/processes/)
+    // 地址栏变了不等于路由切完了：左侧导航是普通链接，vue-router 要等 popstate 才动手。
+    // 不等它切完就跳回去，路由会认为"目标还是当前页"，编辑器不重新挂载、也就不重新取数。
+    await expect(page.locator('.flow__stage')).toHaveCount(0)
     await openVersion(page, target, draft.id)
     await expect(cards).toHaveCount(nodesBefore)
   })
@@ -88,6 +91,38 @@ test.describe('版本编辑器', () => {
     await expect(nodeCard(page, node.id)).toContainText('契约①改名验证')
     await renameAndSave(node.name)
     await expect(nodeCard(page, node.id)).toContainText(node.name)
+  })
+
+  test('选人：候选带部门标签，能按姓名与部门搜', async ({ page, target }) => {
+    const draft = draftOf(target)
+    await openVersion(page, target, draft.id)
+    await fitCanvas(page)
+
+    // 审批节点的配置弹窗里就有审批人这个选人控件
+    const node = draft.nodes.find((item) => item.node_type === 'APPROVAL') as GraphNode
+    await dragBy(page, await boxInView(nodeCard(page, node.id)), 1, 1)
+    const dialog = page.locator('.el-dialog')
+    await expect(dialog.locator('.el-dialog__title')).toContainText('编辑节点')
+
+    // 选人的字段是宽字段（form__wide），用它把选人控件和上面的审批模式区分开
+    const picker = dialog.locator('.form__wide .el-select')
+    await picker.locator('.el-select__wrapper').click()
+
+    // 页面上别的下拉（表单字段的类型下拉等）也把选项渲染在 DOM 里，只认眼前这个打开的
+    const options = page.locator('.el-select-dropdown__item:visible')
+    await expect(options.first()).toBeVisible()
+    const all = await options.allTextContents()
+    // 候选里既有姓名，也有部门小标签
+    expect(all.join()).toContain('技术部门')
+    expect(all.every((text) => text.includes('技术部门'))).toBe(true)
+
+    // 搜部门名：这个部门的人都留下
+    await picker.locator('input.el-select__input').fill('技术')
+    await expect(options).toHaveCount(all.length)
+
+    // 搜不到的词一个都不留
+    await picker.locator('input.el-select__input').fill('查无此人')
+    await expect(options).toHaveCount(0)
   })
 
   test('契约⑦：已发布版本只读——没有保存/发布，画布不给出口圆点', async ({

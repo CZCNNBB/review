@@ -53,7 +53,13 @@ npm run e2e
 
 1. 两库都**显式 import**，不用组件自动导入解析器 —— 有 17 个组件名在两库里重名（`Table`、`Select`、`Tabs`、`Tooltip`…），同时开两个 resolver 必然撞名。
 2. 双向白名单：Element 侧禁 `ElTable`/`ElTabs`/`ElEmpty` 等展示件，AntD 侧禁 `Form`/`Input`/`Select`/`Modal` 等录入件。类型导入不受限（`allowTypeImports`）。
-3. 一个 role 只有一种实现：表格永远走 `DataTable.vue`，弹窗永远走 `AppDialog.vue`。
+3. 一个 role 只有一种实现：表格永远走 `DataTable.vue`，弹窗永远走 `AppDialog.vue`，**选人永远走 `PersonSelect.vue`**。
+
+### 选人控件
+
+`PersonSelect`（配合 `usePersonDirectory`）比裸 `ElSelect` 多两件事：**能搜**（姓名、部门、手机号、邮箱任意一段命中）和**部门小标签**（重名的人一眼分开）。审批人、发起人、部门成员、租户绑定、任务筛选五处都换成它，一处一个裸下拉的话"能不能搜、带不带部门"每次都要重新决定一遍。
+
+部门不在人员接口里（`PersonResponse` 没有部门字段，后端只有"按部门查成员"），所以目录是**按部门扇出再按人合并**出来的 —— 与本工程其它"拉全量再前端合并"的取数方式一致。结果按模块缓存一份，人员/部门/成员有写入的地方调 `invalidatePersonDirectory()` 失效。另外目录的候选里**不含停用的人**（挑停用的人当审批人没法往下走），但 `persons` 保留全部，翻历史记录里的审批人姓名还要用。
 
 主题化：`styles/tokens.css` 是唯一色值源（沿用旧版变量名，`signature.css` 才能整体搬运），Element 走 CSS 变量覆盖、AntD 走 `ConfigProvider` 的 `theme.token`。**两库都关掉了默认阴影与过渡**（现有设计里阴影只用于浮层，圆角只有 4/6px）。AntD 的 `zIndexPopupBase` 提到 3000，否则 ElDialog 里的 Tooltip/下拉会被压在弹窗下面。
 
@@ -103,6 +109,8 @@ src/
 4. 每帧只重算**与拖动节点相连的那几条线**（旧版是全量重算）。
 
 命中判定顺序也照搬旧版：**端口判定必须排在 `data-act` 前面**（分支行的圆点画在带 `data-act` 的行内部，顺序反了会把"按住圆点拉线"误当成"点这一行"）。
+
+配套的一条硬规矩：**卡片里凡是自己处理点击的元素，都必须带 `data-act`**（工具按钮、分支行、新增分支行）。画布的 `pointerdown` 会把卡片上任何一处按下一律当成"选中/拖动"，还会 `setPointerCapture` 抢走指针 —— 没有 `data-act` 的元素，自己的 click 根本不会触发，表现出来就是"点删除弹出编辑弹窗"。`FlowNodeCard.spec.ts` 有断言钉着这几个属性。
 
 ## 与旧版 `backend/web/` 的行为差异
 

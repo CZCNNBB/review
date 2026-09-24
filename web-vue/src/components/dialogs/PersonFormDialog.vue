@@ -7,6 +7,7 @@ import type { Person } from '@/api/types'
 import AppDialog from '@/components/common/AppDialog.vue'
 import DynamicForm from '@/components/form/DynamicForm.vue'
 import { errorMessageOf } from '@/composables/useConfirm'
+import { invalidatePersonDirectory } from '@/composables/usePersonDirectory'
 import type { DynamicFieldSpec } from '@/utils/nodeConfigForm'
 import { toastOk } from '@/utils/notify'
 
@@ -82,6 +83,7 @@ async function submit(): Promise<void> {
           status: String(values.value.status),
         })
       : await orgApi.createPerson(payload)
+    invalidatePersonDirectory()
     toastOk(props.person ? '人员已更新' : '人员已创建')
     open.value = false
     emit('saved', saved)

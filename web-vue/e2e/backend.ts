@@ -1,5 +1,7 @@
 import { expect, test as base, type Locator, type Page } from '@playwright/test'
 
+import { BASE_URL } from './urls'
+
 /**
  * 端到端用例的前置条件：一个连得上的真后端。
  *
@@ -50,7 +52,7 @@ const MISSING_DRAFT =
   '后端里没有「≥2 个节点且含条件分支」的草稿版本，画布用例没有可操作的对象。' +
   '在控制台建一条流程、拉几个节点保存成草稿即可。'
 
-function backendFromEnv(): E2EBackend | null {
+export function backendFromEnv(): E2EBackend | null {
   const base = (process.env.E2E_BACKEND || '').replace(/\/+$/, '')
   const adminKey = process.env.E2E_ADMIN_KEY || ''
   return base && adminKey ? { base, adminKey } : null
@@ -67,7 +69,7 @@ async function admin<T>(backend: E2EBackend, path: string): Promise<T> {
   return payload.data
 }
 
-async function resolveTarget(): Promise<E2ETarget | null> {
+export async function resolveTarget(): Promise<E2ETarget | null> {
   const backend = backendFromEnv()
   if (!backend) return null
 
@@ -168,7 +170,8 @@ export async function openVersion(
   versionId: string,
 ): Promise<void> {
   await primeConfig(page, target)
-  await page.goto(`/#/versions/${versionId}`)
+  // 走绝对地址：这个函数在 globalSetup 里也会被用到，那时没有 test 的 baseURL
+  await page.goto(`${BASE_URL}/#/versions/${versionId}`)
   await expect(page.locator('.flow__stage .flow__node').first()).toBeVisible()
 }
 

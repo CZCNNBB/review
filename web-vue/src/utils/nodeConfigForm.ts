@@ -6,8 +6,17 @@ import { parseJsonInput, stringifyJson } from './json'
 export interface DynamicFieldSpec {
   name: string
   label: string
-  type: 'text' | 'number' | 'select' | 'multiselect' | 'textarea' | 'code' | 'checkbox' | 'note'
-  options?: Array<{ value: string; label: string }>
+  type:
+    | 'text'
+    | 'number'
+    | 'select'
+    | 'multiselect'
+    | 'person-select'
+    | 'textarea'
+    | 'code'
+    | 'checkbox'
+    | 'note'
+  options?: SelectOption[]
   placeholder?: string
   hint?: string
   wide?: boolean
@@ -33,6 +42,8 @@ export interface BuiltConfigForm {
 export interface SelectOption {
   value: string
   label: string
+  /** 选人的选项带所属部门，下拉里缀成小标签（普通枚举选项不传） */
+  departments?: string[]
 }
 
 /**
@@ -67,10 +78,11 @@ export function buildConfigForm(
       fields.push({
         name,
         label,
-        type: 'multiselect',
+        // 与节点定义里 ui:widget 同名：选人渲染成 PersonSelect（可搜索 + 部门标签）
+        type: 'person-select',
         options: personOptions,
         wide: true,
-        hint: rule.description || '按住 Ctrl 或 Shift 多选',
+        hint: rule.description || '可搜索姓名或部门，按住 Ctrl 或 Shift 多选',
       })
       values[name] = (Array.isArray(current) ? current : [])
         .map((item) => (item as Record<string, unknown> | null)?.[itemKey])

@@ -6,7 +6,6 @@ import { safe } from '@/api/http'
 import { actionApi } from '@/api/modules/action'
 import { approvalApi } from '@/api/modules/approval'
 import type { StartInstanceInput } from '@/api/modules/approval'
-import { orgApi } from '@/api/modules/org'
 import { processApi } from '@/api/modules/process'
 import type {
   BusinessAction,
@@ -26,6 +25,7 @@ import PageHead from '@/components/layout/PageHead.vue'
 import PanelCard from '@/components/layout/PanelCard.vue'
 import { useAsyncPage } from '@/composables/useAsyncPage'
 import { errorMessageOf } from '@/composables/useConfirm'
+import { loadPersonDirectory, usePersonDirectory } from '@/composables/usePersonDirectory'
 import { useUrlFilters } from '@/composables/useUrlFilters'
 import { useConfigStore } from '@/stores/config'
 import { useCredentialsStore } from '@/stores/credentials'
@@ -50,13 +50,19 @@ const EMPTY: StartData = { tenants: [], processes: [], persons: [], actions: [],
 const config = useConfigStore()
 const credentials = useCredentialsStore()
 const tenantFilter = useUrlFilters().filter('tenant')
+// 发起人候选：走人员目录（自带部门，选人下拉里缀成小标签）
+const directory = usePersonDirectory()
 
 const { data, loading, error, refresh } = useAsyncPage<StartData>(async () => {
   // 租户一个都拉不到时这一页没有发起身份可用，这一项不兜底，交给整页错误面板（旧版同样如此）
   const tenants = await credentials.loadTenants()
   const [processes, persons, actions] = await Promise.all([
     safe(processApi.processes(200), []),
-    safe(orgApi.persons(200), []),
+    // 人员走目录（带部门）：这一页要用它渲染候选，结果窗还要用它翻审批人姓名
+    safe(
+      loadPersonDirectory().then((directory) => directory.persons),
+      [] as Person[],
+    ),
     safe(actionApi.list(200), []),
   ])
   // 地址栏里的租户取不到时不写死：回落到第一个租户（旧版 find(...) || tenants[0] 同口径）
@@ -99,7 +105,7 @@ const processOptions = computed(() =>
 )
 const applicantOptions = computed(() => [
   { value: '', label: '不指定' },
-  ...data.value.persons.map((item) => ({ value: item.id, label: item.name })),
+  ...directory.options.value,
 ])
 const actionOptions = computed(() => [
   { value: '', label: '不触发业务执行' },
@@ -141,7 +147,12 @@ const fields = computed<DynamicFieldSpec[]>(() => [
     required: true,
     placeholder: '供应商付款申请',
   },
-  { name: 'applicant_person_id', label: '发起人', type: 'select', options: applicantOptions.value },
+  {
+    name: 'applicant_person_id',
+    label: '发起人',
+    type: 'person-select',
+    options: applicantOptions.value,
+  },
   {
     name: 'action_code',
     label: '业务动作',

@@ -58,6 +58,43 @@ test('每个页面都能打开，没有整页失败态、没有运行时报错',
   expect(crashes, '页面有未捕获的异常').toEqual([])
 })
 
+/**
+ * 操作列的按钮挤在一起是真实发生过的：旧版靠 HTML 里的换行当分隔符，而 Vue 编译模板
+ * 会把元素之间的空白删掉（whitespace: 'condense'），照搬过来几个按钮就贴在一坨。
+ * 这条按实际坐标量间距，css 改动把它弄丢了会立刻红。
+ */
+test('列表页的操作列：按钮之间有间距，且排在一条线上', async ({ page, target }) => {
+  await primeConfig(page, target)
+  await page.goto('/#/processes')
+
+  // 等表格真的出结果再数：加载中就直接判"没有行"的话，用例会假装跳过
+  await expect(page.locator('td.is-actions, .ant-empty')).not.toHaveCount(0)
+
+  const actions = page.locator('td.is-actions').first()
+  if ((await actions.count()) === 0) test.skip(true, '这个后端里没有带操作列的行')
+  await expect(actions).toBeVisible()
+
+  const links = actions.locator('.btn--link')
+  const count = await links.count()
+  if (count < 2) test.skip(true, '这一行只有一个操作按钮，量不出间距')
+
+  const boxes = []
+  for (let index = 0; index < count; index += 1) boxes.push((await links.nth(index).boundingBox())!)
+
+  // 同一行看的是竖直中心：<a> 是 inline，<button> 是 inline-block，
+  // 两者的盒子上沿本来就不一定齐，差个一两像素不算换行。
+  const centerOf = (box: { y: number; height: number }): number => box.y + box.height / 2
+
+  for (let index = 1; index < boxes.length; index += 1) {
+    const gap = boxes[index].x - (boxes[index - 1].x + boxes[index - 1].width)
+    expect(gap, `第 ${index} 个按钮和上一个之间没有间距`).toBeGreaterThan(4)
+    expect(
+      Math.abs(centerOf(boxes[index]) - centerOf(boxes[0])),
+      '操作按钮应当排在同一行',
+    ).toBeLessThan(4)
+  }
+})
+
 test('查不到的 id 给整页失败态，而不是白屏', async ({ page, target }) => {
   await primeConfig(page, target)
 

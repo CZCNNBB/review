@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { ElOption, ElSelect } from 'element-plus'
+import { ElSelect } from 'element-plus'
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { safe } from '@/api/http'
 import { approvalApi } from '@/api/modules/approval'
-import { orgApi } from '@/api/modules/org'
 import type { ApprovalTask, Person } from '@/api/types'
 import DataTable from '@/components/common/DataTable.vue'
 import type { ColumnSpec } from '@/components/common/DataTable.vue'
@@ -16,7 +15,9 @@ import EmptyState from '@/components/layout/EmptyState.vue'
 import ErrorPanel from '@/components/layout/ErrorPanel.vue'
 import PageHead from '@/components/layout/PageHead.vue'
 import PanelCard from '@/components/layout/PanelCard.vue'
+import PersonSelect from '@/components/form/PersonSelect.vue'
 import { useAsyncPage } from '@/composables/useAsyncPage'
+import { loadPersonDirectory, usePersonDirectory } from '@/composables/usePersonDirectory'
 import { useUrlFilters } from '@/composables/useUrlFilters'
 import { useShellStore } from '@/stores/shell'
 import { formatDuration, formatTime, shortId } from '@/utils/format'
@@ -50,10 +51,18 @@ const { filter } = useUrlFilters()
 const statusFilter = filter('status', 'PENDING')
 const personFilter = filter('person')
 
+// 人员筛选的候选：人员目录（带部门标签）+ 一个「全部审批人」的空选项
+const directory = usePersonDirectory()
+const personOptions = computed(() => [
+  { value: '', label: '全部审批人' },
+  ...directory.options.value,
+])
+
 const { data, loading, error, refresh } = useAsyncPage<TasksData>(
   async () => {
-    // 人员是整页的前提（没有人员就没有审批人），这一项不兜底，失败交给错误面板
-    const persons = await orgApi.persons(200)
+    // 人员是整页的前提（没有人员就没有审批人），这一项不兜底，失败交给错误面板。
+    // 走人员目录取：筛选下拉要用它带的部门标签，这一页也就少发一次人员请求。
+    const persons = (await loadPersonDirectory()).persons
     if (!persons.length) {
       shell.setCount('tasks', 0)
       return { persons, tasks: [] }
@@ -137,15 +146,13 @@ onMounted(refresh)
     title="审批任务"
     note="全部审批人的任务集中在这里，按产生时间倒序。管理台代为处理时使用任务所属审批人的身份，用于联调和验收测试。"
   >
-    <ElSelect v-if="data.persons.length" v-model="personFilter" style="width: 180px">
-      <ElOption value="" label="全部审批人" />
-      <ElOption
-        v-for="person in data.persons"
-        :key="person.id"
-        :value="person.id"
-        :label="person.name"
-      />
-    </ElSelect>
+    <PersonSelect
+      v-if="data.persons.length"
+      v-model="personFilter"
+      :options="personOptions"
+      placeholder="全部审批人"
+      style="width: 200px"
+    />
     <ElSelect v-if="data.persons.length" v-model="statusFilter" style="width: 140px">
       <ElOption value="PENDING" label="只看待办" />
       <ElOption value="ALL" label="全部状态" />

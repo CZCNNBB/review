@@ -39,6 +39,13 @@ defineSlots<{
   'empty-action'?: () => unknown
 }>()
 
+/**
+ * key 叫 actions 的就是操作列：右对齐不换行，几个链接按钮排在一条线上。
+ * 各页面的操作列本来就用这个 key，不必再在列定义里重复声明一次。
+ * 对应旧版列定义上的 cls: 'is-actions' 与 `.tbl td.is-actions`。
+ */
+const isActionsColumn = (key: string): boolean => key === 'actions'
+
 const antColumns = computed<TableColumnsType>(() =>
   props.columns.map((column) => ({
     title: column.title,
@@ -52,6 +59,7 @@ const antColumns = computed<TableColumnsType>(() =>
       const value = (record as Record<string, unknown>)[column.key]
       return value === null || value === undefined ? '—' : String(value)
     },
+    customCell: isActionsColumn(column.key) ? () => ({ class: 'is-actions' }) : undefined,
   })),
 )
 </script>
@@ -75,8 +83,13 @@ const antColumns = computed<TableColumnsType>(() =>
 </template>
 
 <style scoped>
-/* 单元格里的操作链接排一行，不要换行 */
 .data-table :deep(td) {
   vertical-align: middle;
+}
+
+/* 操作列：几个链接按钮排在一条线上，不换行，右对齐（旧版 .tbl td.is-actions 的同一套） */
+.data-table :deep(td.is-actions) {
+  white-space: nowrap;
+  text-align: right;
 }
 </style>

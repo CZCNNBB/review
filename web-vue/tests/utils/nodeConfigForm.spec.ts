@@ -75,7 +75,8 @@ describe('节点配置弹窗的表单描述', () => {
     expect(form.hasSchema).toBe(true)
     expect(form.fields.map((field) => field.name)).toEqual(['approval_mode', 'approvers'])
     expect(form.fields[0].label).toBe('审批模式 *')
-    expect(form.fields[1].type).toBe('multiselect')
+    // 选人用专门的字段类型：DynamicForm 据此渲染可搜索、带部门标签的 PersonSelect
+    expect(form.fields[1].type).toBe('person-select')
 
     // 回填：下拉要选中当前值，人员要选中已配的人
     expect(form.values.approval_mode).toBe('OR')

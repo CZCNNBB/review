@@ -11,6 +11,7 @@ import {
 import { computed, ref } from 'vue'
 
 import CodeTextarea from '@/components/common/CodeTextarea.vue'
+import PersonSelect from '@/components/form/PersonSelect.vue'
 import type { DynamicFieldSpec, NodeFormNoteAction } from '@/utils/nodeConfigForm'
 
 /**
@@ -101,6 +102,14 @@ defineExpose({ validate })
           :label="option.label"
         />
       </ElSelect>
+
+      <PersonSelect
+        v-else-if="field.type === 'person-select'"
+        :model-value="(valueOf(field.name) as string[]) || []"
+        :options="field.options || []"
+        multiple
+        @update:model-value="setValue(field.name, $event)"
+      />
 
       <ElSelect
         v-else-if="field.type === 'multiselect'"

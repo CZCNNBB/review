@@ -281,13 +281,11 @@ async function toggleBinding(binding: TenantPersonBinding): Promise<void> {
     <DepartmentMembersDialog
       v-model:open="membersDialogOpen"
       :department="membersDepartment"
-      :persons="page.persons"
       @changed="refresh"
     />
     <TenantPersonBindDialog
       v-model:open="bindDialogOpen"
       :tenant-id="bindTenantId"
-      :persons="page.persons"
       @saved="refreshBindings"
     />
   </template>

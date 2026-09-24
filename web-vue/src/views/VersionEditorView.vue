@@ -21,6 +21,7 @@ import JsonBlock from '@/components/common/JsonBlock.vue'
 import CodeTextarea from '@/components/common/CodeTextarea.vue'
 import { confirmAction, errorMessageOf } from '@/composables/useConfirm'
 import { useAsyncPage } from '@/composables/useAsyncPage'
+import { usePersonDirectory } from '@/composables/usePersonDirectory'
 import { useVersionEditorStore } from '@/stores/versionEditor'
 import type { FlowNode, NodeDefinition, ValidationIssue } from '@/types/domain'
 import { canConnectPlain } from '@/utils/flowBranch'
@@ -38,18 +39,17 @@ const canvasRef = ref<InstanceType<typeof FlowCanvas> | null>(null)
 
 const graph = ref<ProcessGraph | null>(null)
 const definitions = ref<NodeDefinition[]>([])
-const persons = ref<Array<{ id: string; name: string }>>([])
+// 审批人候选：走人员目录拉（自带部门，选人下拉里缀成小标签）
+const directory = usePersonDirectory()
 
 const page = useAsyncPage(
   async () => {
-    const [loadedGraph, loadedDefinitions, loadedPersons] = await Promise.all([
+    const [loadedGraph, loadedDefinitions] = await Promise.all([
       processApi.graph(versionId.value),
       processApi.nodeDefinitions(100),
-      import('@/api/modules/org').then((module) => module.orgApi.persons(200)),
     ])
     graph.value = loadedGraph
     definitions.value = loadedDefinitions
-    persons.value = loadedPersons
 
     // 工作副本：同一版本重复进入（切页签、开关弹窗）都复用，离开路由才丢
     if (editor.versionId !== loadedGraph.version_id) {
@@ -63,9 +63,7 @@ const page = useAsyncPage(
   null as ProcessGraph | null,
 )
 
-const personOptions = computed(() =>
-  persons.value.map((person) => ({ value: person.id, label: person.name })),
-)
+const personOptions = computed(() => directory.options.value)
 const definitionById = (id: string): NodeDefinition | undefined =>
   definitions.value.find((item) => item.id === id)
 

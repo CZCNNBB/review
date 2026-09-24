@@ -1,14 +1,16 @@
 <script setup lang="ts">
-import { ElButton, ElOption, ElSelect } from 'element-plus'
+import { ElButton } from 'element-plus'
 import { computed, ref, watch } from 'vue'
 
 import { orgApi } from '@/api/modules/org'
-import type { Department, DepartmentMember, Person } from '@/api/types'
+import type { Department, DepartmentMember } from '@/api/types'
 import AppDialog from '@/components/common/AppDialog.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import type { ColumnSpec } from '@/components/common/DataTable.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
+import PersonSelect from '@/components/form/PersonSelect.vue'
 import { useAsyncPage } from '@/composables/useAsyncPage'
+import { invalidatePersonDirectory, usePersonDirectory } from '@/composables/usePersonDirectory'
 import { errorMessageOf } from '@/composables/useConfirm'
 import { formatTime } from '@/utils/format'
 import { toastError, toastOk } from '@/utils/notify'
@@ -19,11 +21,12 @@ const open = defineModel<boolean>('open', { default: false })
 
 const props = defineProps<{
   department?: Department | null
-  /** 全局人员，用来填「添加成员」的下拉；由页面传入，避免弹窗再拉一次全量 */
-  persons: Person[]
 }>()
 
 const emit = defineEmits<{ (event: 'changed'): void }>()
+
+// 候选人员：走人员目录（带部门标签），不再由页面传 persons 进来
+const directory = usePersonDirectory()
 
 const columns: ColumnSpec[] = [
   { key: 'person_name', title: '姓名', width: 140 },
@@ -58,9 +61,10 @@ const memberIds = computed(
  * 可加入的人：启用中、且还没在该部门里的人。
  * 故意只排除仍在部门里的成员 —— 旧版连停用过的成员一起排除，而下拉里又没有「恢复」，
  * 结果就是成员一旦被停用就再也加不回来（后端重新添加其实会把关系重新启用）。
+ * 候选来自人员目录（带部门标签，能看出这个人是不是已经在别的部门了）。
  */
 const available = computed(() =>
-  props.persons.filter((person) => person.status === 'ENABLED' && !memberIds.value.has(person.id)),
+  directory.options.value.filter((option) => !memberIds.value.has(option.value)),
 )
 
 watch(open, (isOpen) => {
@@ -75,6 +79,7 @@ async function addMember(): Promise<void> {
   try {
     await orgApi.addDepartmentMember(props.department.id, pickedPersonId.value)
     pickedPersonId.value = ''
+    invalidatePersonDirectory()
     toastOk('成员已添加')
     await refresh()
     emit('changed')
@@ -90,6 +95,7 @@ async function disableMember(member: DepartmentMember): Promise<void> {
   busy.value = true
   try {
     await orgApi.disableDepartmentMember(props.department.id, member.person_id)
+    invalidatePersonDirectory()
     toastOk('成员关系已停用')
     await refresh()
     emit('changed')
@@ -108,20 +114,12 @@ async function disableMember(member: DepartmentMember): Promise<void> {
     width="640px"
   >
     <div class="member-add">
-      <ElSelect
+      <PersonSelect
         v-model="pickedPersonId"
-        filterable
-        placeholder="选择人员…"
-        style="width: 100%"
+        :options="available"
+        placeholder="搜索姓名或部门…"
         :disabled="busy"
-      >
-        <ElOption
-          v-for="person in available"
-          :key="person.id"
-          :value="person.id"
-          :label="person.name"
-        />
-      </ElSelect>
+      />
       <ElButton type="primary" :loading="busy" @click="addMember">添加</ElButton>
     </div>
 

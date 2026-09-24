@@ -7,6 +7,7 @@ import type { Department } from '@/api/types'
 import AppDialog from '@/components/common/AppDialog.vue'
 import DynamicForm from '@/components/form/DynamicForm.vue'
 import { errorMessageOf } from '@/composables/useConfirm'
+import { invalidatePersonDirectory } from '@/composables/usePersonDirectory'
 import type { DynamicFieldSpec } from '@/utils/nodeConfigForm'
 import { toastOk } from '@/utils/notify'
 
@@ -47,6 +48,7 @@ async function submit(): Promise<void> {
       code: String(values.value.code || '').trim(),
       name: String(values.value.name || '').trim(),
     })
+    invalidatePersonDirectory()
     toastOk('部门已创建')
     open.value = false
     emit('saved', created)

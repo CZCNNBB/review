@@ -1,5 +1,7 @@
 import { defineConfig, devices } from '@playwright/test'
 
+import { BASE_URL } from './e2e/urls'
+
 /**
  * 端到端测试：跑真浏览器。
  *
@@ -14,12 +16,14 @@ import { defineConfig, devices } from '@playwright/test'
  * 没配就整体跳过，不会假装跑过了。
  */
 const PORT = Number(process.env.E2E_PORT || 5199)
-const BASE_URL = `http://127.0.0.1:${PORT}`
 
 export default defineConfig({
   testDir: './e2e',
+  // 预热开发服务器：不先走一遍，第一个打开的用例要等 Vite 现编译路由 chunk
+  globalSetup: './e2e/global-setup.ts',
   timeout: 30_000,
-  expect: { timeout: 5_000 },
+  // 真后端 + 开发期现编译，5 秒对首屏加载太紧（并行跑时尤其明显）
+  expect: { timeout: 15_000 },
   fullyParallel: true,
   reporter: process.env.CI ? 'line' : 'list',
   use: {

@@ -4,6 +4,10 @@ import type { ConditionRowVM } from '@/utils/flowCanvasModel'
 // 条件分支卡片里的分支行：序号 + 条件 + 去向 + 自己那一行的出口圆点。
 // 出口圆点带 data-branch，拉线时靠它知道「这次拉的是第几条分支」（契约③）。
 // 点行本身打开分支编辑器 —— 注意判定顺序：圆点在行内部，命中判定必须先看圆点。
+//
+// 行要带 data-act：画布的 pointerdown 会把卡片内的按下一律当成"选中/拖动"并抢走指针捕获，
+// 行自己的 click 就不会触发了（点了没反应，或者弹出来的是节点配置窗而不是分支编辑器）。
+// 圆点在行内部，画布那边的判定顺序是"先看圆点、再看 data-act"，所以拉线不受影响。
 const props = defineProps<{
   rows: ConditionRowVM[]
   showAddRow: boolean
@@ -22,6 +26,7 @@ const emit = defineEmits<{
       :key="row.branch"
       class="flow__row"
       :class="{ 'is-incomplete': Boolean(row.problem) }"
+      :data-act="props.editable ? 'edit-branch' : undefined"
       :title="row.problem || (props.editable ? '点这里改条件' : '')"
       @click="props.editable && emit('edit')"
     >
@@ -41,6 +46,7 @@ const emit = defineEmits<{
     <div
       v-if="props.showAddRow"
       class="flow__row flow__row--add"
+      data-act="edit-branch"
       title="新增一条分支"
       @click="emit('edit')"
     >

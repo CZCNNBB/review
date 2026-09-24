@@ -57,13 +57,16 @@ function cardStyle(): Record<string, string> {
       ></div>
     </template>
 
+    <!-- 工具按钮必须带 data-act：画布的 pointerdown 会把卡片上的按下一律当成"选中/拖动"，
+         并且抢走指针捕获，按钮自己的 click 根本不会触发（点了删除变成打开编辑弹窗）。 -->
     <div v-if="props.editable" class="flow__node-tools">
-      <button type="button" @click.stop="emit('edit')">
+      <button type="button" data-act="edit-node" @click.stop="emit('edit')">
         {{ model.isCondition ? '改名' : '配置' }}
       </button>
       <button
         v-if="model.node.node_type !== 'START'"
         class="is-danger"
+        data-act="drop-node"
         type="button"
         @click.stop="emit('delete')"
       >

@@ -143,4 +143,42 @@ test.describe('画布', () => {
     await expect(page.locator('.flow__stage .flow__node')).toHaveCount(nodesBefore + 1)
     await expect(page.locator('.el-dialog__title')).toContainText('新增节点')
   })
+
+  test('删除节点：走确认弹窗删掉，而不是弹出编辑弹窗', async ({ page, target }) => {
+    const draft = draftOf(target)
+    const victim = draft.nodes.find(
+      (node) => !['START', 'CONDITION'].includes(node.node_type),
+    ) as GraphNode
+    const card = nodeCard(page, victim.id)
+    const nodesBefore = await page.locator('.flow__stage .flow__node').count()
+
+    await card.hover()
+    await card.locator('button[data-act="drop-node"]').click()
+
+    // 卡片上的按钮必须自己处理点击：被画布当成"选中节点"的话这里会冒出编辑弹窗
+    await expect(page.locator('.el-message-box')).toContainText('删除节点')
+    await expect(page.locator('.el-dialog')).toHaveCount(0)
+
+    await page.locator('.el-message-box button').filter({ hasText: '删除' }).click()
+
+    await expect(page.locator('.flow__stage .flow__node')).toHaveCount(nodesBefore - 1)
+    await expect(nodeCard(page, victim.id)).toHaveCount(0)
+  })
+
+  test('点条件分支的某一行：打开分支编辑器，不是节点配置窗', async ({ page, target }) => {
+    const draft = draftOf(target)
+    const condition = draft.nodes.find((node) => node.node_type === 'CONDITION') as GraphNode
+
+    await nodeCard(page, condition.id).locator('.flow__row').first().click()
+
+    await expect(page.locator('.el-dialog__title')).toContainText('条件分支 ·')
+  })
+
+  test('面板里的拖影在屏幕外，不会挤在面板上露出来', async ({ page }) => {
+    const ghosts = page.locator('.flow-palette .flow-drag-ghost')
+    await expect(ghosts).not.toHaveCount(0)
+
+    const box = await ghosts.first().boundingBox()
+    expect(box!.x + box!.width).toBeLessThan(0)
+  })
 })
