@@ -61,6 +61,9 @@ backend/
         docs/
         src/
 
+  data/                           # 建库脚本 init.sql 与增量迁移
+  test_backcall/                  # 回调联调用的假支付系统（见「审批通过后的业务执行」）
+
 ```
 
 ## 分层约定
@@ -327,3 +330,61 @@ PENDING → RUNNING → SUCCEEDED
 `server/integration` 和 `server/process` 的第一版已经落地：业务动作定义与参数规则在
 `integration`，审批流定义、运行和审批通过后的业务执行在 `process`。当前先保持单体
 部署，按模块边界逐步实现。
+
+#### 本地联调：一个假支付系统
+
+`test_backcall/` 把支付场景的两端放在同一个脚本里：一边扮演业务系统去**发起审批**，
+一边扮演收款接口接收审批通过后的**回调**。
+
+配置写在 `test_backcall/.env` 里（照 `.env.example` 建一份），改一次就不用每次带参数：
+
+```bash
+cd test_backcall
+cp .env.example .env      # 首次；填 CENTER / API_KEY / PROCESS_ID / ACTION_CODE
+```
+
+```ini
+CENTER=http://127.0.0.1:8090
+API_KEY=appr_live_xxx        # 租户 API Key，控制台租户详情页签发
+PROCESS_ID=<审批流ID>
+ACTION_CODE=PAYMENT_EXECUTE  # 留空表示只审批不回调
+ADMIN_KEY=<管理密钥>          # 可选：填了启动时就列出可选的审批流与动作
+```
+
+```bash
+python test_backcall/test_backcall.py      # 起来后打开 http://127.0.0.1:9000/ 有网页面板
+```
+
+| 接口 | 干什么 |
+| --- | --- |
+| `GET /` | 网页面板：看当前配置、点按钮发起审批、看收到的回调（每 2 秒自动刷新） |
+| `GET/POST /start` | 发起审批：拿租户 API Key 调审批中心的 `POST /api/processes/{process_id}/instances` |
+| `POST /pay` | 执行支付：接收审批通过后的回调，不真扣款，打印「支付成功了！」 |
+| `GET /_events` | 面板用的回调列表（内存里最近 50 条，不落盘） |
+
+不想手敲带参数的 URL 就开面板：`http://127.0.0.1:9000/` —— 上面能改请求体、点「发起审批」，
+审批通过后的回调也会实时出现在页面下半部分（终端里照样打印一份）。
+
+完整闭环（`/start` 的查询串是这笔付款单的数据）：
+
+```text
+http://127.0.0.1:9000/start?payment_id=PAY-2026-001&JinEr=12000
+  → 审批中心（控制台「审批任务」里同意）
+  → 审批通过 → 回调 /pay
+  → 终端打印  ★ 支付成功了！（付款单 PAY-2026-001，金额 12000）
+```
+
+`/start` 的请求体分两层（见 `docs/业务系统接入指南.md` §6.1）：`business_key` 等是审批中心的
+入参放在顶层（它就是审批中心那侧的单号），`approval_form` 是给审批人看的业务字段，
+`execution_payload` 是审批通过后**原样回调**给 `/pay` 的请求体 —— 业务数据都带上，
+业务标识用业务自己的说法 `payment_id`（同一个值，但**不在 payload 里重复出现 `business_key`**，
+免得分不清哪个是审批中心的单号、哪个是业务系统的单号）。缺业务标识的回调会回 400。
+
+控制台里要配：租户「回调基础地址」= `http://127.0.0.1:9000`、租户「配置凭据」签一个
+Service Token、业务动作 `POST /pay` 且成功状态码含 200、再把审批流与业务动作授权给这个租户。
+
+命令行参数优先于 `.env`，临时改一项不用动文件：`--port 9100`、`--center` 换审批中心、
+`--pay-path /pay`（要与动作的相对路径一致）、`--expect-token xxx` 核对凭据、
+`--status 500` 测失败分支、`--delay 8` 测动作超时、`--env 别的文件`。
+启动横幅会打印"配置来源"和当前生效的值（密钥打码），改了 `.env` 没生效一眼就能看出来。
+回调路径配错时脚本照样收下并提示，响应体里也会写明"收到了哪个路径"，免得执行记录上看不出问题。

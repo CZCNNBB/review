@@ -59,8 +59,8 @@ const CLOSED_LOOP_STEPS: LoopStep[] = [
   },
   {
     name: '授权租户使用流程与动作',
-    desc: '租户只有被授权后才能用对应流程发起审批、触发对应业务动作。',
-    href: '#/grants',
+    desc: '租户只有被授权后才能用对应流程发起审批、触发对应业务动作；在租户详情页里配。',
+    href: '#/tenants',
     key: 'grants',
   },
   {

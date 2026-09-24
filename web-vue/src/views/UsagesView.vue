@@ -64,7 +64,7 @@ const { data, loading, error, refresh } = useAsyncPage<UsagesData>(
     // 租户列表拉不到时这张表无从谈起，这一项不兜底，交给整页错误面板（旧版同样如此）
     const tenants = await credentials.loadTenants()
     // URL 里的租户取不到（链接指向已删租户）时按「全部租户」处理，否则会得到一张
-    // 看起来「没有任何记录」的空表，和筛选行显示的租户自相矛盾（与资源授权页同一条取舍）
+    // 看起来「没有任何记录」的空表，和筛选行显示的租户自相矛盾（与旧的资源授权页同一条取舍）
     const picked = tenants.find((item) => item.id === tenantFilter.value)
     const targets = picked ? [picked] : tenants
 

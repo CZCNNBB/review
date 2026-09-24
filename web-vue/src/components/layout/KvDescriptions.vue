@@ -14,6 +14,8 @@ export interface KvPair {
   value?: string
   /** 有插槽时忽略 value */
   slot?: string
+  /** 鼠标悬停在标签上时显示：放原始字段名这类"要查得到但不该占视线"的技术细节 */
+  hint?: string
 }
 
 defineProps<{
@@ -24,7 +26,10 @@ defineProps<{
 <template>
   <ADescriptions class="kv-descriptions" :column="1" :colon="false">
     <template v-for="pair in pairs" :key="(pair as KvPair).key">
-      <ADescriptionsItem v-if="pair" :label="pair.key">
+      <ADescriptionsItem v-if="pair" :label="pair.hint ? undefined : pair.key">
+        <template v-if="pair.hint" #label>
+          <span :title="pair.hint">{{ pair.key }}</span>
+        </template>
         <slot v-if="pair.slot" :name="pair.slot" />
         <span v-else>{{ pair.value }}</span>
       </ADescriptionsItem>

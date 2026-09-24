@@ -34,7 +34,6 @@ test('每个页面都能打开，没有整页失败态、没有运行时报错',
     '/processes',
     '/definitions',
     '/actions',
-    '/grants',
     '/tasks',
     '/start',
     '/executions',
@@ -64,19 +63,25 @@ test('每个页面都能打开，没有整页失败态、没有运行时报错',
  * 这条按实际坐标量间距，css 改动把它弄丢了会立刻红。
  */
 test('列表页的操作列：按钮之间有间距，且排在一条线上', async ({ page, target }) => {
+  // 有没有数据按接口判断，不靠读 DOM：表格在加载期也渲染空态，
+  // 拿"有没有行"当跳过条件会读到加载中的空表，用例就假装跳过了。
+  const processes = await admin<Array<unknown>>(
+    target.backend.base,
+    target.backend.adminKey,
+    '/api/admin/processes?limit=5',
+  )
+  if (!processes.length) test.skip(true, '这个后端里没有审批流，量不出操作列间距')
+
   await primeConfig(page, target)
   await page.goto('/#/processes')
 
-  // 等表格真的出结果再数：加载中就直接判"没有行"的话，用例会假装跳过
-  await expect(page.locator('td.is-actions, .ant-empty')).not.toHaveCount(0)
-
   const actions = page.locator('td.is-actions').first()
-  if ((await actions.count()) === 0) test.skip(true, '这个后端里没有带操作列的行')
   await expect(actions).toBeVisible()
 
   const links = actions.locator('.btn--link')
   const count = await links.count()
-  if (count < 2) test.skip(true, '这一行只有一个操作按钮，量不出间距')
+  // 详情 / 复制 / 停用 三个里至少有两个；真只剩一个说明列渲染出问题了
+  expect(count, '操作列里的按钮少于两个，量不出间距').toBeGreaterThan(1)
 
   const boxes = []
   for (let index = 0; index < count; index += 1) boxes.push((await links.nth(index).boundingBox())!)
@@ -93,6 +98,115 @@ test('列表页的操作列：按钮之间有间距，且排在一条线上', as
       '操作按钮应当排在同一行',
     ).toBeLessThan(4)
   }
+})
+
+/**
+ * 授权并进租户详情页之后，这里挡两件事：两块面板真的在页面上，以及旧的 #/grants
+ * 链接不会掉进 404（收藏夹和文档里还有它）。
+ *
+ * 不假设这个租户已经有多少条授权 —— 有行就验行内的启用/停用按钮，没行就验空态，
+ * 换一个后端也能跑。
+ */
+test('租户详情页里有审批流与业务动作授权两块面板', async ({ page, target }) => {
+  const tenants = await admin<Array<{ id: string }>>(
+    target.backend.base,
+    target.backend.adminKey,
+    '/api/admin/tenants?limit=5',
+  )
+  if (!tenants[0]) test.skip(true, '这个后端里还没有租户')
+
+  await primeConfig(page, target)
+  await page.goto(`/#/tenants/${tenants[0].id}`)
+
+  const processPanel = page.locator('.panel', { hasText: '审批流授权' })
+  const actionPanel = page.locator('.panel', { hasText: '业务动作授权' })
+  await expect(processPanel.getByText('审批流授权', { exact: true })).toBeVisible()
+  await expect(actionPanel.getByText('业务动作授权', { exact: true })).toBeVisible()
+
+  for (const panel of [processPanel, actionPanel]) {
+    const rows = panel.locator('tbody tr.ant-table-row')
+    if ((await rows.count()) === 0) {
+      await expect(panel.locator('.ant-empty')).toBeVisible()
+      continue
+    }
+    // 有授权时行内必须能停用/启用，否则只能看不能管
+    await expect(rows.first().getByRole('button', { name: /停用|启用/ })).toBeVisible()
+  }
+
+  // 旧链接落到租户列表，不是 404
+  await page.goto('/#/grants')
+  await expect(page).toHaveURL(/#\/tenants$/)
+})
+
+/**
+ * API Key 与回调凭据的有效状态是 ACTIVE（撤销后 REVOKED），不是 ENABLED。
+ * 前端曾经拿 ENABLED 去比，"撤销"按钮从来没渲染出来过，未撤销的行还被文案说成"已撤销"。
+ */
+test('租户详情页里有效的密钥与凭据都能撤销', async ({ page, target }) => {
+  const { base, adminKey } = target.backend
+  const tenants = await admin<Array<{ id: string }>>(base, adminKey, '/api/admin/tenants?limit=5')
+  if (!tenants[0]) test.skip(true, '这个后端里还没有租户')
+  const tenantId = tenants[0].id
+
+  const [apiKeys, credentials] = await Promise.all([
+    admin<Array<{ status: string }>>(base, adminKey, `/api/admin/tenants/${tenantId}/api-keys`),
+    admin<Array<{ status: string }>>(
+      base,
+      adminKey,
+      `/api/admin/tenants/${tenantId}/callback-credentials`,
+    ),
+  ])
+
+  await primeConfig(page, target)
+  await page.goto(`/#/tenants/${tenantId}`)
+
+  // 按面板标题定位，不用 hasText 匹配整块面板：正文里到处都会提到 "API Key"
+  const panelOf = (title: string) =>
+    page.locator('.panel').filter({ has: page.locator('.panel__title', { hasText: title }) })
+
+  let checked = 0
+  for (const [title, rows] of [
+    ['API Key', apiKeys],
+    ['回调 Service Token', credentials],
+  ] as const) {
+    const activeIndex = rows.findIndex((row) => row.status === 'ACTIVE')
+    if (activeIndex < 0) continue
+    await expect(
+      panelOf(title)
+        .locator('tbody tr.ant-table-row')
+        .nth(activeIndex)
+        .getByRole('button', { name: '撤销' }),
+      `${title} 里有效的那一行应该能撤销`,
+    ).toBeVisible()
+    checked += 1
+  }
+
+  // 两个面板都没有有效凭据的话，这条用例什么也没验到，不能算通过
+  expect(checked, '这个租户没有有效的密钥或凭据，验不了撤销入口').toBeGreaterThan(0)
+})
+
+/**
+ * 契约⑧：管理台按「租户 → 有效 API Key」自动借用租户密钥。
+ * 密钥的有效状态是 ACTIVE，前端曾经拿 ENABLED 去比 —— 结果永远借不到，
+ * 这一页只会提示"没有可用的租户 API Key"。
+ */
+test('发起审批页能自动借到租户的密钥并验证通过', async ({ page, target }) => {
+  const { base, adminKey } = target.backend
+  const tenants = await admin<Array<{ id: string }>>(base, adminKey, '/api/admin/tenants?limit=5')
+  if (!tenants[0]) test.skip(true, '这个后端里还没有租户')
+
+  const keys = await admin<Array<{ status: string }>>(
+    base,
+    adminKey,
+    `/api/admin/tenants/${tenants[0].id}/api-keys`,
+  )
+  if (!keys.some((key) => key.status === 'ACTIVE')) test.skip(true, '这个租户没有有效密钥')
+
+  await primeConfig(page, target)
+  await page.goto(`/#/start?tenant=${tenants[0].id}`)
+
+  // 借到密钥之后页面会拿它去 /api/tenant/context 实打实验一次，验过才显示这一行
+  await expect(page.getByText(/密钥已验证/)).toBeVisible()
 })
 
 test('查不到的 id 给整页失败态，而不是白屏', async ({ page, target }) => {

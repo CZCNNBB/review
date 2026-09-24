@@ -12,13 +12,19 @@ import { toastOk } from '@/utils/notify'
 
 // 授权租户使用审批流 / 业务动作。旧版是两个弹窗，字段只差被授权的资源，
 // 这里用一个 mode 表达：选租户 + 选资源，提交到对应接口。
+//
+// 传了 tenantId（租户详情页里用）就不再显示租户下拉 —— 租户已经确定了，
+// 再让人选一次既多余、又可能选错到别的租户去。
 const open = defineModel<boolean>('open', { default: false })
 
 const props = defineProps<{
   mode: 'process' | 'action'
-  tenants: Tenant[]
   processes: Process[]
   actions: BusinessAction[]
+  /** 候选租户；锁定了租户时不用传 */
+  tenants?: Tenant[]
+  /** 锁定租户：给了它就只给这个租户授权，不显示租户下拉 */
+  tenantId?: string
 }>()
 
 const emit = defineEmits<{ (event: 'saved'): void }>()
@@ -29,37 +35,43 @@ const error = ref('')
 const submitting = ref(false)
 const formRef = ref<InstanceType<typeof DynamicForm> | null>(null)
 
-const fields = computed<DynamicFieldSpec[]>(() => [
-  {
-    name: 'tenant_id',
-    label: '租户 *',
-    type: 'select',
-    required: true,
-    options: props.tenants.map((item) => ({ value: item.id, label: item.name })),
-  },
-  isProcess.value
-    ? {
-        name: 'process_id',
-        label: '审批流 *',
-        type: 'select',
-        required: true,
-        // 停用的流程仍能授权（老授权要能继续工作），但得让操作的人看得见
-        options: props.processes.map((item) => ({
-          value: item.id,
-          label: `${item.name}${item.status === 'DISABLED' ? '（已停用）' : ''}`,
-        })),
-      }
-    : {
-        name: 'business_action_id',
-        label: '业务动作 *',
-        type: 'select',
-        required: true,
-        options: props.actions.map((item) => ({
-          value: item.id,
-          label: `${item.name}（${item.action_code}）`,
-        })),
-      },
-])
+const fields = computed<DynamicFieldSpec[]>(() => {
+  const locked: DynamicFieldSpec[] = []
+  if (!props.tenantId) {
+    locked.push({
+      name: 'tenant_id',
+      label: '租户 *',
+      type: 'select',
+      required: true,
+      options: (props.tenants || []).map((item) => ({ value: item.id, label: item.name })),
+    })
+  }
+  locked.push(
+    isProcess.value
+      ? {
+          name: 'process_id',
+          label: '审批流 *',
+          type: 'select',
+          required: true,
+          // 停用的流程仍能授权（老授权要能继续工作），但得让操作的人看得见
+          options: props.processes.map((item) => ({
+            value: item.id,
+            label: `${item.name}${item.status === 'DISABLED' ? '（已停用）' : ''}`,
+          })),
+        }
+      : {
+          name: 'business_action_id',
+          label: '业务动作 *',
+          type: 'select',
+          required: true,
+          options: props.actions.map((item) => ({
+            value: item.id,
+            label: `${item.name}（${item.action_code}）`,
+          })),
+        },
+  )
+  return locked
+})
 
 watch(
   () => [open.value, props.mode] as const,
@@ -76,7 +88,7 @@ async function submit(): Promise<void> {
   submitting.value = true
   error.value = ''
   try {
-    const tenantId = String(values.value.tenant_id)
+    const tenantId = props.tenantId || String(values.value.tenant_id)
     if (isProcess.value) {
       await grantApi.bindProcess(tenantId, { process_id: String(values.value.process_id) })
     } else {

@@ -2,11 +2,9 @@ import { endpoints } from '../endpoints'
 import { api } from '../http'
 import type {
   CallbackCredential,
-  ProcessBinding,
   ProcessUsageRecord,
   Tenant,
   TenantApiKey,
-  BusinessActionBinding,
 } from '../types'
 
 export interface TenantInput {
@@ -57,8 +55,4 @@ export const tenantApi = {
 
   usageRecords: (id: string, limit = 200, businessKey?: string) =>
     api.get<ProcessUsageRecord[]>(endpoints.tenantUsageRecords(id, limit, businessKey)),
-
-  processBindings: (id: string) => api.get<ProcessBinding[]>(endpoints.processBindings(id)),
-
-  actionBindings: (id: string) => api.get<BusinessActionBinding[]>(endpoints.actionBindings(id)),
 }

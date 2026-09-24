@@ -5,7 +5,7 @@ import { formatDuration, formatTime, maskSecret, orderMark, shortId } from '@/ut
 import { newId } from '@/utils/id'
 import { parseJsonInput, stringifyJson } from '@/utils/json'
 import { buildCurl, collectPayload, resolveFormSchema } from '@/utils/payload'
-import { stampTone, statusText, tagTone } from '@/utils/status'
+import { isActive, stampTone, statusText, tagTone } from '@/utils/status'
 
 describe('格式化', () => {
   it('时间：空值给破折号，非法值原样返回，正常值格式化到分钟', () => {
@@ -71,6 +71,19 @@ describe('状态映射', () => {
     expect(stampTone('REJECTED')).toBe('rejected')
     expect(stampTone('RUNNING')).toBe('running')
     expect(stampTone('CANCELLED')).toBe('idle')
+  })
+
+  /**
+   * 两种"有效"取值都要认：租户/流程/绑定用 ENABLED，租户 API Key 与回调凭据用 ACTIVE。
+   * 只有 ENABLED 那一版让"撤销"按钮从来没出现过，也让自动借用租户密钥（契约⑧）永远借不到。
+   */
+  it('有效性判定同时认 ENABLED 与 ACTIVE', () => {
+    expect(isActive('ENABLED')).toBe(true)
+    expect(isActive('ACTIVE')).toBe(true)
+    expect(isActive('REVOKED')).toBe(false)
+    expect(isActive('DISABLED')).toBe(false)
+    expect(isActive(null)).toBe(false)
+    expect(isActive(undefined)).toBe(false)
   })
 })
 

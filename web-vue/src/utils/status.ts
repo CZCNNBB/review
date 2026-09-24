@@ -28,6 +28,20 @@ export function statusText(status?: string | null): string {
   return STATUS_TEXT[status] || status
 }
 
+/**
+ * 「这个东西现在还有效吗」。
+ *
+ * 别在页面里写 `status === 'ENABLED'`：不同实体的"有效"取值不一样 ——
+ * 租户 / 流程 / 业务动作 / 部门成员 / 各类绑定用 `ENABLED`，
+ * 而**租户 API Key 与回调凭据用的是 `ACTIVE`**，撤销后是 `REVOKED`。
+ * 密钥那两处就是拿 ENABLED 去比，结果"撤销"按钮从来没渲染出来过。
+ */
+const ACTIVE_STATUSES = ['ENABLED', 'ACTIVE']
+
+export function isActive(status?: string | null): boolean {
+  return Boolean(status && ACTIVE_STATUSES.includes(status))
+}
+
 export function tagTone(status?: string | null): TagTone {
   if (status && TAG_ON.includes(status)) return 'on'
   if (status && TAG_OFF.includes(status)) return 'off'

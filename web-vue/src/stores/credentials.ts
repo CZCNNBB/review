@@ -3,6 +3,7 @@ import { ref } from 'vue'
 
 import { tenantApi } from '@/api/modules/tenant'
 import type { ProcessUsageRecord, Tenant, TenantApiKey } from '@/api/types'
+import { isActive } from '@/utils/status'
 
 /**
  * 管理台自动借用租户密钥（契约⑧）。
@@ -41,10 +42,11 @@ export const useCredentialsStore = defineStore('credentials', () => {
     return apiKeys.value[tenantId]
   }
 
-  /** 取该租户第一个启用中的密钥；没有可用的返回 null。 */
+  /** 取该租户第一个有效（未撤销）的密钥；没有可用的返回 null。 */
   async function tenantApiKey(tenantId: string): Promise<string | null> {
     const keys = await tenantApiKeys(tenantId)
-    const usable = keys.find((item) => item.status === 'ENABLED')
+    // 密钥的有效状态是 ACTIVE，撤销后是 REVOKED —— 不能拿 ENABLED 去比
+    const usable = keys.find((item) => isActive(item.status))
     return usable?.api_key || null
   }
 

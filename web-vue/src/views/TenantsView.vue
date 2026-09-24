@@ -91,7 +91,7 @@ onMounted(refresh)
         {{ formatTime(row.created_at) }}
       </template>
       <template #cell-actions="{ row }">
-        <a class="btn--link btn--sm" :href="`#/tenants/${row.id}`">接入凭据</a>
+        <a class="btn--link btn--sm" :href="`#/tenants/${row.id}`">详情</a>
         <button class="btn--link btn--sm" type="button" @click="openEdit(row)">编辑</button>
       </template>
       <template #empty-action>

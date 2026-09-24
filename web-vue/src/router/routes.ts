@@ -36,7 +36,8 @@ export const routes: RouteRecordRaw[] = [
     component: () => import('@/views/DefinitionsView.vue'),
   },
   { path: '/actions', name: 'actions', component: () => import('@/views/BusinessActionsView.vue') },
-  { path: '/grants', name: 'grants', component: () => import('@/views/GrantsView.vue') },
+  // 授权并进了租户详情页。旧链接直接落到租户列表，别让书签掉进 404。
+  { path: '/grants', redirect: '/tenants' },
 
   { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue') },
   {
@@ -97,7 +98,6 @@ export const NAV: NavGroup[] = [
       { key: 'processes', hash: '#/processes', label: '审批流' },
       { key: 'definitions', hash: '#/definitions', label: '节点定义' },
       { key: 'actions', hash: '#/actions', label: '业务动作' },
-      { key: 'grants', hash: '#/grants', label: '资源授权' },
     ],
   },
   {

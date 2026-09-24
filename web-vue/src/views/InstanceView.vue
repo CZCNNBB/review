@@ -7,7 +7,8 @@ import { safe } from '@/api/http'
 import { actionApi } from '@/api/modules/action'
 import { approvalApi } from '@/api/modules/approval'
 import { orgApi } from '@/api/modules/org'
-import type { ApprovalTask, ExecutionRecord, Person, Tenant } from '@/api/types'
+import { processApi } from '@/api/modules/process'
+import type { ApprovalTask, BusinessAction, ExecutionRecord, Person, Tenant } from '@/api/types'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution, TimelineRecord } from '@/components/common/ApprovalTimeline.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
@@ -27,6 +28,8 @@ import { useConfigStore } from '@/stores/config'
 import { useCredentialsStore } from '@/stores/credentials'
 import { formatDuration, formatTime, shortId } from '@/utils/format'
 import { toastError, toastOk } from '@/utils/notify'
+import { formFieldLabels } from '@/utils/schemaForm'
+import type { JSONSchema } from '@/types/domain'
 
 /** 待办里还有 duration_ms（「已等待」列要用），共享类型没写，本地补上。 */
 type TaskRow = ApprovalTask & { duration_ms?: number | null }
@@ -166,6 +169,10 @@ interface InstancePage {
   executions: TimelineExecution[]
   execution: ExecutionRecord | null
   persons: Person[]
+  /** 这张单子所用版本的审批表单 Schema：字段的显示名只有这里有 */
+  formSchema: JSONSchema | null
+  /** 业务动作列表：把 action_code 翻成中文名 */
+  actions: BusinessAction[]
 }
 
 const EMPTY_PAGE: InstancePage = {
@@ -174,6 +181,8 @@ const EMPTY_PAGE: InstancePage = {
   executions: [],
   execution: null,
   persons: [],
+  formSchema: null,
+  actions: [],
 }
 
 const manualKey = ref('')
@@ -201,12 +210,22 @@ const {
     safe(orgApi.persons(200), [] as Person[]),
   ])
 
+  // 给审批人看的东西不能是 JSON 键名：表单要按版本冻结的 Schema 显示中文名，
+  // 所以拿到详情后再按它用的版本取一次图（Schema 在版本里，改了新版不影响这张老单子）。
+  // 动作列表同理，把 action_code 翻成中文名。两者都是辅助信息，取不到就退化成键名/编码。
+  const [graph, actions] = await Promise.all([
+    safe(processApi.graph(rawDetail.process_version_id), null),
+    safe(actionApi.list(200), [] as BusinessAction[]),
+  ])
+
   return {
     tenant: borrowed.tenant,
     detail: normalizeInstance(rawDetail, instanceId.value),
     executions: normalizeExecutions(rawTimeline),
     execution: executions[0] || null,
     persons,
+    formSchema: graph?.form_schema || null,
+    actions,
   }
 }, EMPTY_PAGE)
 
@@ -246,16 +265,36 @@ const detailPairs = computed(() => [
   { key: '业务动作', slot: 'actionCode' },
 ])
 
+/** 审批表单字段的中文名：与流程编辑器共用同一份映射（都来自版本的 form_schema）。 */
+const fieldLabels = computed(() => formFieldLabels(page.value.formSchema))
+
+/** action_code → 业务动作名。查不到就退回编码（动作被删或列表没取到）。 */
+const actionNames = computed(
+  () => new Map(page.value.actions.map((action) => [action.action_code, action.name])),
+)
+
+const actionName = computed(() => {
+  const code = detail.value?.action_code
+  if (!code) return ''
+  return actionNames.value.get(code) || code
+})
+
 // 表单是业务系统自己定的键值，每一项都要一个插槽：槽名按序号生成，
 // 模板里用动态槽名逐个接上（对象值摆 JsonBlock，标量按文本显示）。
+// 标签取 Schema 里的显示名 —— 给审批人看的是「金额」，不是「JinEr」；
+// 原始字段名挂在标签的悬停提示里，联调时还找得到。
 const formPairs = computed(() =>
-  Object.entries(detail.value?.approval_form || {}).map(([key, raw], index) => ({
-    key,
-    slot: `form-value-${index}`,
-    json: raw !== null && typeof raw === 'object',
-    text: raw === null || raw === undefined ? '—' : String(raw),
-    raw,
-  })),
+  Object.entries(detail.value?.approval_form || {}).map(([key, raw], index) => {
+    const label = fieldLabels.value[`approval_form.${key}`] || key
+    return {
+      key: label,
+      hint: `字段名 ${key}`,
+      slot: `form-value-${index}`,
+      json: raw !== null && typeof raw === 'object',
+      text: raw === null || raw === undefined ? '—' : String(raw),
+      raw,
+    }
+  }),
 )
 
 const executionPairs = computed(() => {
@@ -340,7 +379,10 @@ onMounted(refresh)
           <span v-else class="muted">全局模式，无租户归属</span>
         </template>
         <template #actionCode>
-          <span v-if="detail.action_code" class="code">{{ detail.action_code }}</span>
+          <template v-if="detail.action_code">
+            <span>{{ actionName }}</span>
+            <span class="code action-code">{{ detail.action_code }}</span>
+          </template>
           <span v-else class="muted">不触发业务执行</span>
         </template>
       </KvDescriptions>
@@ -409,7 +451,8 @@ onMounted(refresh)
           <StatusTag :status="execution.status" />
         </template>
         <template #execCall>
-          <span class="code">{{ execution.http_method || '—' }} {{ execution.relative_path }}</span>
+          <span>{{ actionName }}</span>
+          <span class="code action-code">{{ execution.http_method }} {{ execution.relative_path }}</span>
         </template>
         <template #execHttpStatus>
           <span class="code">{{ execution.http_status_code ?? '—' }}</span>
@@ -467,6 +510,11 @@ onMounted(refresh)
 /* 失败原因用朱砂色点出来（旧版是内联 style） */
 .exec-error {
   color: var(--cinnabar);
+}
+/* 中文名后面跟的编码/调用地址：留着给联调看，但不抢视线 */
+.action-code {
+  margin-left: 8px;
+  color: var(--ink-3);
 }
 /* 手动填密钥：一段说明 + 一行输入 */
 .manual-key__hint {
