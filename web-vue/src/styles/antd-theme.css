@@ -1,0 +1,47 @@
+/* ==========================================================================
+   Ant Design Vue 主题补充
+   主色等 token 走 antd-theme.ts 的 ConfigProvider（JS 主题），这里只补 CSS 侧
+   无法用 token 表达的部分：表格/描述列表的观感对齐旧版控制台。
+   ========================================================================== */
+
+/* 表格：旧版 .tbl 是紧凑型，表头有底色、行悬停有底色、无外描边 */
+.ant-table-wrapper .ant-table {
+  font-size: var(--fs-md);
+  background: var(--surface);
+}
+
+.ant-table-wrapper .ant-table-thead > tr > th {
+  font-weight: 600;
+  font-size: var(--fs-sm);
+  color: var(--ink-2);
+  border-bottom: 1px solid var(--rule);
+}
+
+.ant-table-wrapper .ant-table-tbody > tr > td {
+  border-bottom: 1px solid var(--rule-weak);
+}
+
+.ant-table-wrapper .ant-table-tbody > tr:last-child > td {
+  border-bottom: none;
+}
+
+/* 键值面板：旧版 .kv 的 label 列宽 132px、次要色 */
+.kv-descriptions .ant-descriptions-item-label {
+  width: 132px;
+  color: var(--ink-3);
+  font-size: var(--fs-md);
+}
+
+.kv-descriptions .ant-descriptions-item-content {
+  color: var(--ink);
+  font-size: var(--fs-md);
+}
+
+/* 页签：旧版 .tabs 用下划线高亮，AntD 默认一致，只调字号与间距 */
+.ant-tabs-top > .ant-tabs-nav {
+  margin-bottom: var(--sp-4);
+}
+
+.ant-tabs .ant-tabs-tab {
+  font-size: var(--fs-base);
+}

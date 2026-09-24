@@ -1,0 +1,13 @@
+/* 样式入口：顺序固定，令牌必须在最前，主题覆盖在组件库之后 */
+@import './tokens.css';
+
+@import 'element-plus/dist/index.css';
+@import 'ant-design-vue/dist/reset.css';
+
+@import './base.css';
+@import './signature.css';
+@import './pages.css';
+
+@import './element-theme.css';
+@import './antd-theme.css';
+@import './overrides.css';

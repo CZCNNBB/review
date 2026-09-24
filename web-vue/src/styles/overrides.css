@@ -1,0 +1,39 @@
+/* ==========================================================================
+   垫片：两库都不给、又必须和现有设计对齐的那一点东西。
+   硬性约束：这里不改组件行为，只做视觉对齐；行数保持在 80 行以内。
+   ========================================================================== */
+
+/* Element 的按钮高度变量已对齐旧版 .btn / .btn--sm，这里只补字重与描边手感 */
+.el-button {
+  font-weight: 400;
+}
+
+.el-button--primary {
+  --el-button-text-color: var(--surface);
+}
+
+/* 输入框：旧版 .input 无投影、聚焦只换描边色 */
+.el-input__wrapper,
+.el-textarea__inner {
+  box-shadow: 0 0 0 1px var(--rule) inset;
+}
+
+.el-input__wrapper.is-focus,
+.el-textarea__inner:focus {
+  box-shadow: 0 0 0 1px var(--indigo) inset;
+}
+
+/* AntD 空态：旧版 .empty 的字号与间距 */
+.ant-empty-normal {
+  margin: var(--sp-4) 0;
+  color: var(--ink-3);
+}
+
+.ant-empty-normal .ant-empty-description {
+  color: var(--ink-3);
+}
+
+/* AntD 页签：去掉内容区多余的顶部间距 */
+.ant-tabs-content-holder {
+  min-height: 0;
+}

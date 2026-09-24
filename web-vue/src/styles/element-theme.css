@@ -1,0 +1,110 @@
+/* ==========================================================================
+   Element Plus 主题映射
+   只做一件事：把 Element 的 CSS 变量指到 tokens.css 的令牌上。
+   这里不许出现新的色值 —— 唯一的例外是 color-mix 里的白色，用 --surface 表达。
+   Element 的 light-N 约定是与白色混合 N/10。
+   ========================================================================== */
+
+:root {
+  --el-color-primary: var(--indigo);
+  --el-color-primary-dark-2: var(--indigo-dark);
+  --el-color-primary-light-3: color-mix(in srgb, var(--indigo) 70%, var(--surface));
+  --el-color-primary-light-5: color-mix(in srgb, var(--indigo) 50%, var(--surface));
+  --el-color-primary-light-7: color-mix(in srgb, var(--indigo) 30%, var(--surface));
+  --el-color-primary-light-8: color-mix(in srgb, var(--indigo) 20%, var(--surface));
+  --el-color-primary-light-9: var(--indigo-wash);
+
+  --el-color-success: var(--pine);
+  --el-color-success-light-3: color-mix(in srgb, var(--pine) 70%, var(--surface));
+  --el-color-success-light-5: color-mix(in srgb, var(--pine) 50%, var(--surface));
+  --el-color-success-light-7: color-mix(in srgb, var(--pine) 30%, var(--surface));
+  --el-color-success-light-8: color-mix(in srgb, var(--pine) 20%, var(--surface));
+  --el-color-success-light-9: var(--pine-wash);
+
+  --el-color-danger: var(--cinnabar);
+  --el-color-danger-light-3: color-mix(in srgb, var(--cinnabar) 70%, var(--surface));
+  --el-color-danger-light-5: color-mix(in srgb, var(--cinnabar) 50%, var(--surface));
+  --el-color-danger-light-7: color-mix(in srgb, var(--cinnabar) 30%, var(--surface));
+  --el-color-danger-light-8: color-mix(in srgb, var(--cinnabar) 20%, var(--surface));
+  --el-color-danger-light-9: var(--cinnabar-wash);
+
+  --el-color-warning: var(--amber);
+  --el-color-warning-light-3: color-mix(in srgb, var(--amber) 70%, var(--surface));
+  --el-color-warning-light-5: color-mix(in srgb, var(--amber) 50%, var(--surface));
+  --el-color-warning-light-7: color-mix(in srgb, var(--amber) 30%, var(--surface));
+  --el-color-warning-light-8: color-mix(in srgb, var(--amber) 20%, var(--surface));
+  --el-color-warning-light-9: var(--amber-wash);
+
+  --el-color-info: var(--ink-3);
+  --el-color-info-light-9: var(--surface-sunken);
+
+  --el-text-color-primary: var(--ink);
+  --el-text-color-regular: var(--ink-2);
+  --el-text-color-secondary: var(--ink-3);
+  --el-text-color-placeholder: var(--ink-3);
+  --el-text-color-disabled: var(--ink-3);
+
+  --el-border-color: var(--rule);
+  --el-border-color-light: var(--rule);
+  --el-border-color-lighter: var(--rule-weak);
+  --el-border-color-extra-light: var(--rule-weak);
+  --el-border-color-dark: var(--ink-3);
+  --el-border-color-hover: var(--ink-3);
+
+  --el-fill-color: var(--surface-sunken);
+  --el-fill-color-light: var(--surface-sunken);
+  --el-fill-color-lighter: var(--surface-sunken);
+  --el-fill-color-blank: var(--surface);
+  --el-bg-color: var(--surface);
+  --el-bg-color-page: var(--paper);
+  --el-bg-color-overlay: var(--surface);
+
+  --el-border-radius-base: var(--radius);
+  --el-border-radius-small: var(--radius);
+  --el-border-radius-round: 999px;
+
+  --el-font-family: var(--font);
+  --el-font-size-base: var(--fs-base);
+
+  /* 与旧版 .btn（32px）和 .btn--sm（26px）对齐 */
+  --el-component-size: 32px;
+  --el-component-size-small: 26px;
+  --el-component-size-large: 38px;
+
+  --el-box-shadow: var(--shadow-pop);
+  --el-box-shadow-light: var(--shadow-pop);
+  --el-box-shadow-lighter: var(--shadow-pop);
+}
+
+/* 弹窗/抽屉沿用旧版 dialog 的圆角与描边，去掉默认投影（现有设计只在浮层用阴影） */
+.el-dialog {
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-lg);
+}
+
+.el-dialog__header {
+  margin-right: 0;
+  padding: 14px 20px;
+  border-bottom: 1px solid var(--rule-weak);
+}
+
+.el-dialog__title {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.el-dialog__body {
+  padding: 20px;
+  color: var(--ink);
+}
+
+.el-dialog__footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--rule-weak);
+}
+
+.el-message {
+  border-radius: var(--radius);
+  border-color: var(--rule);
+}

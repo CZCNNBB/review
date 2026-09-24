@@ -17,6 +17,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
 from app.server.integration.api import router as integration_router
 from app.server.organization.api import router as organization_router
 from app.server.process.api import router as process_router
@@ -45,6 +46,25 @@ async def lifespan(_: FastAPI):
         await asyncio.to_thread(stop_business_execution_worker, worker)
 
 
+def _mount_console(app: FastAPI) -> None:
+    """把 Vue 版配置台的构建产物挂到 /console 下。
+
+    前端路由用的是 hash 模式，所以 /console/ 这一个入口就能兜住全部页面，不需要
+    服务端做 history fallback。产物没构建时（全新克隆的仓库）静默跳过，不能让
+    后端因为少了一个前端目录就起不来。
+    """
+
+    dist_directory = Path(__file__).resolve().parent.parent / "web-vue" / "dist"
+    if not dist_directory.is_dir():
+        return
+
+    app.mount(
+        "/console",
+        StaticFiles(directory=str(dist_directory), html=True),
+        name="console",
+    )
+
+
 def create_app() -> FastAPI:
     """
     创建FastAPI实例
@@ -65,13 +85,15 @@ def create_app() -> FastAPI:
     app.include_router(organization_router, prefix="/api", tags=["人员与组织模块"])
     app.include_router(process_router, prefix="/api", tags=["审批流维护模块"])
     app.include_router(integration_router, prefix="/api", tags=["业务接入模块"])
-    
+
+    _mount_console(app)
+
     @app.get("/")
     def root_endpoint():
         """返回审批中心后端的基础可用状态。"""
 
         return {"message": "统一入口"}
-    
+
     return app
 
 
