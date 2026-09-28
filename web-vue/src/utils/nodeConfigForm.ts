@@ -219,6 +219,10 @@ export function nodeConfigSummary(node: Pick<FlowNode, 'node_type' | 'config'>):
     const text = mode === 'AND' ? '全部同意' : mode === 'OR' ? '任意一人同意' : mode
     return `${text} · ${count} 位审批人`
   }
+  if (node.node_type === 'COPY') {
+    const count = Array.isArray(config.recipients) ? config.recipients.length : 0
+    return count > 0 ? `抄送给 ${count} 人 · 自动继续` : '请选择抄送人'
+  }
   if (node.node_type === 'END') return '流程完成'
   if (node.node_type === 'START') return '流程入口'
 

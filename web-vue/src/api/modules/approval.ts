@@ -2,9 +2,11 @@ import { endpoints } from '../endpoints'
 import { api } from '../http'
 import type {
   ApprovalActionResult,
+  ApprovalCopy,
   ApprovalInstanceDetail,
   ApprovalTask,
   ApprovalTimeline,
+  ApprovalWorkItem,
   StartedInstance,
   TenantContext,
 } from '../types'
@@ -34,6 +36,18 @@ export const approvalApi = {
 
   tasks: (personId: string, status?: string) =>
     api.get<ApprovalTask[]>(endpoints.approvalTasks(personId, status)),
+
+  /** 默认查询全部抄送记录，也可只看指定人员。 */
+  copies: (personId?: string) =>
+    api.get<ApprovalCopy[]>(endpoints.approvalCopies(personId)),
+
+  /** 从统一任务表查询审批与抄送工作台。 */
+  workItems: (offset = 0) =>
+    api.get<ApprovalWorkItem[]>(endpoints.workItems(offset)),
+
+  /** 从抄送记录打开审批单，只提供查看能力。 */
+  copiedInstance: (copyId: string, personId: string) =>
+    api.get<ApprovalInstanceDetail>(endpoints.approvalCopyInstance(copyId, personId)),
 
   approve: (taskId: string, input: TaskDecisionInput) =>
     api.post<ApprovalActionResult>(endpoints.approveTask(taskId), input),

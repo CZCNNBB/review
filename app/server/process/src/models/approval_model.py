@@ -110,15 +110,15 @@ class ApprovalNodeExecution(SQLModel, table=True):
 
 
 class ApprovalTask(SQLModel, table=True):
-    """进入人工审批节点时，为全部审批人同时创建的待办任务。"""
+    """统一保存人工审批任务和抄送收件记录，由 task_type 区分操作权限。"""
 
     __tablename__ = "approval_task"
     __table_args__ = (
-        # 同一节点执行内不给同一审批人重复创建任务。
+        # 同一节点执行内不给同一接收人重复创建任务。
         UniqueConstraint(
             "node_execution_id",
-            "approver_person_id",
-            name="uq_approval_task_approver",
+            "recipient_person_id",
+            name="uq_approval_task_recipient",
         ),
         {"schema": PROCESS_DB_SCHEMA},
     )
@@ -129,12 +129,16 @@ class ApprovalTask(SQLModel, table=True):
         foreign_key="process.approval_node_execution.id",
         index=True,
     )
-    # 审批人 ID 不建立指向 organization Schema 的跨 Schema 外键。
-    approver_person_id: UUID = Field(index=True)
-    approver_snapshot_json: dict = Field(
+    # 审批任务的接收人是审批人，抄送任务的接收人是抄送人。
+    # 人员 ID 不建立指向 organization Schema 的跨 Schema 外键。
+    recipient_person_id: UUID = Field(index=True)
+    recipient_snapshot_json: dict = Field(
         default_factory=dict,
         sa_type=PROCESS_JSON_TYPE,
     )
+    task_type: str = Field(default="APPROVAL", max_length=20, index=True)
+    # 类型专有的附加信息放在这里；人员和状态等查询字段保持独立列。
+    extension_json: dict = Field(default_factory=dict, sa_type=PROCESS_JSON_TYPE)
     status: str = Field(default="PENDING", max_length=20, index=True)
     created_at: datetime = Field(default_factory=utc_now, sa_type=DateTime(timezone=True))
     handled_at: Optional[datetime] = Field(

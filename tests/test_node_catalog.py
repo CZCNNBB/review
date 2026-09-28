@@ -10,6 +10,7 @@ import unittest
 from app.server.process.src.constants import (
     NODE_TYPE_APPROVAL,
     NODE_TYPE_CONDITION,
+    NODE_TYPE_COPY,
     NODE_TYPE_END,
     NODE_TYPE_START,
 )
@@ -22,11 +23,11 @@ from app.server.process.src.node_catalog import (
 
 class NodeCatalogTestCase(unittest.TestCase):
     def test_catalog_holds_the_builtin_types(self) -> None:
-        """内置四种节点类型都在清单里，一种不多一种不少。"""
+        """内置五种节点类型都在清单里，一种不多一种不少。"""
 
         self.assertEqual(
             set(NODE_TYPES),
-            {NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_CONDITION, NODE_TYPE_END},
+            {NODE_TYPE_START, NODE_TYPE_APPROVAL, NODE_TYPE_CONDITION, NODE_TYPE_COPY, NODE_TYPE_END},
         )
 
     def test_whitelist_is_derived_from_catalog(self) -> None:
@@ -62,6 +63,7 @@ class NodeCatalogTestCase(unittest.TestCase):
                 NODE_TYPE_APPROVAL: "00000000-0000-0000-0000-000000000102",
                 NODE_TYPE_END: "00000000-0000-0000-0000-000000000103",
                 NODE_TYPE_CONDITION: "00000000-0000-0000-0000-000000000104",
+                NODE_TYPE_COPY: "00000000-0000-0000-0000-000000000105",
             },
         )
         self.assertEqual(len({spec.id for spec in NODE_TYPES.values()}), len(NODE_TYPES))
@@ -82,6 +84,11 @@ class NodeCatalogTestCase(unittest.TestCase):
             approval_schema["properties"]["approvers"]["minItems"],
             1,
         )
+
+        # 抄送节点必须选择收件人，但不需要审批模式。
+        copy_schema = NODE_TYPES[NODE_TYPE_COPY].config_schema_json
+        self.assertEqual(copy_schema["required"], ["recipients"])
+        self.assertEqual(copy_schema["properties"]["recipients"]["minItems"], 1)
 
         # 结束节点走到就是审批通过、流程完成，没有可配置项，也就没有必填项。
         end_schema = NODE_TYPES[NODE_TYPE_END].config_schema_json

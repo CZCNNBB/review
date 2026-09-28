@@ -101,6 +101,36 @@ class ApprovalTaskResponse(BaseModel):
     duration_ms: int | None
 
 
+class ApprovalCopyResponse(BaseModel):
+    """抄送收件箱中的一条只读审批单。"""
+
+    id: UUID
+    instance_id: UUID
+    instance_title: str
+    business_key: str
+    instance_status: str
+    node_name: str
+    recipient_person_id: UUID
+    recipient_snapshot: dict[str, Any]
+    created_at: datetime
+
+
+class ApprovalWorkItemResponse(BaseModel):
+    """工作台中的审批或抄送任务，由 task_type 明确区分。"""
+
+    id: UUID
+    task_type: str
+    instance_id: UUID
+    instance_title: str
+    business_key: str
+    node_name: str
+    person_id: UUID
+    person_snapshot: dict[str, Any]
+    task_status: str
+    instance_status: str
+    created_at: datetime
+
+
 class ApprovalRecordResponse(BaseModel):
     """一次审批操作留下的审计记录。"""
 

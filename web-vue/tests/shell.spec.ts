@@ -49,12 +49,15 @@ describe('控制台外壳', () => {
     await router.push('/tenants')
     expect(activeLabels()[0]).toContain('租户')
 
-    // 版本编辑器挂在「审批流」下，审批详情挂在「审批任务」下
+    // 版本编辑器挂在「审批流」下，审批和抄送详情都挂在「工作台」下。
     await router.push('/versions/41000000-0000-4000-8000-000000000002')
     expect(activeLabels()[0]).toContain('审批流')
 
     await router.push('/instances/70000000-0000-4000-8000-000000000001')
-    expect(activeLabels()[0]).toContain('审批任务')
+    expect(activeLabels()[0]).toContain('工作台')
+
+    await router.push('/copies/70000000-0000-4000-8000-000000000002')
+    expect(activeLabels()[0]).toContain('工作台')
   })
 
   it('页面标题随路由变化', async () => {

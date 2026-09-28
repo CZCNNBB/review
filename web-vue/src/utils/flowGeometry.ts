@@ -21,6 +21,7 @@ export function nodeBox(node: Pick<FlowNode, 'position'>): Point {
 export function nodeVariant(node: Pick<FlowNode, 'node_type'>): string {
   if (node.node_type === 'START') return 'START'
   if (node.node_type === 'CONDITION') return 'CONDITION'
+  if (node.node_type === 'COPY') return 'COPY'
   if (node.node_type === 'END') return 'END-APPROVED'
   return 'APPROVAL'
 }
@@ -28,6 +29,7 @@ export function nodeVariant(node: Pick<FlowNode, 'node_type'>): string {
 export function nodeTypeLabel(node: Pick<FlowNode, 'node_type'>): string {
   if (node.node_type === 'START') return '开始'
   if (node.node_type === 'CONDITION') return '条件分支'
+  if (node.node_type === 'COPY') return '抄送节点'
   if (node.node_type === 'END') return '结束'
   return '审批'
 }

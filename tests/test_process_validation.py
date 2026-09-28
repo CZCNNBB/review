@@ -24,6 +24,8 @@ from app.server.process.src.constants import (
     RULE_CONNECTION_NODE_UNKNOWN,
     RULE_CONNECTION_OPERATOR_INCOMPATIBLE,
     RULE_CONNECTION_VALUE_NOT_IN_ENUM,
+    RULE_COPY_RECIPIENT_REQUIRED,
+    RULE_COPY_RECIPIENT_DUPLICATE,
     RULE_TOO_MANY_OUTGOING_CONNECTIONS,
     RULE_END_AS_SOURCE,
     RULE_END_REQUIRED,
@@ -525,6 +527,46 @@ class ApproverRuleTestCase(ValidationTestCase):
             include_persons=False,
         )
         self.assertEqual(issues, [])
+
+
+class CopyRecipientRuleTestCase(ValidationTestCase):
+    """验证抄送节点在发布前必须配置有效收件人。"""
+
+    def test_missing_and_duplicate_recipients_are_reported(self) -> None:
+        """空收件人或重复人员 ID 都不能发布为抄送节点。"""
+
+        start_id, copy_id, end_id = uuid4(), uuid4(), uuid4()
+        copy_definition = self.seed["COPY"]
+        connections = [
+            self.connection(start_id, copy_id),
+            self.connection(copy_id, end_id),
+        ]
+
+        empty_issues = self.validate(
+            [
+                self.start_node(start_id),
+                (copy_id, copy_definition.id, "抄送", {"recipients": []}),
+                self.end_node(end_id),
+            ],
+            connections,
+        )
+        self.assert_has_code(empty_issues, RULE_COPY_RECIPIENT_REQUIRED)
+
+        recipient = {"person_id": str(self.person_id)}
+        duplicate_issues = self.validate(
+            [
+                self.start_node(start_id),
+                (
+                    copy_id,
+                    copy_definition.id,
+                    "抄送",
+                    {"recipients": [recipient, recipient]},
+                ),
+                self.end_node(end_id),
+            ],
+            connections,
+        )
+        self.assert_has_code(duplicate_issues, RULE_COPY_RECIPIENT_DUPLICATE)
 
 
 class StartEndRuleTestCase(ValidationTestCase):

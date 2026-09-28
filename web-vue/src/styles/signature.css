@@ -266,6 +266,9 @@
 .flow-palette__dot--APPROVAL {
   background: var(--indigo);
 }
+.flow-palette__dot--COPY {
+  background: #3f8f96;
+}
 .flow-palette__dot--END {
   background: var(--cinnabar);
 }
@@ -371,6 +374,9 @@
 
 .flow__node--APPROVAL {
   border-left-color: var(--indigo);
+}
+.flow__node--COPY {
+  border-left-color: #3f8f96;
 }
 .flow__node--START {
   border-left-color: var(--pine);

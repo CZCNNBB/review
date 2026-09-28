@@ -69,6 +69,12 @@ export const endpoints = {
     `/api/approval-tasks?person_id=${encodeURIComponent(personId)}` +
     (status ? `&status=${encodeURIComponent(status)}` : '') +
     '&limit=200',
+  approvalCopies: (personId?: string) =>
+    '/api/approval-copies?limit=200' +
+    (personId ? `&person_id=${encodeURIComponent(personId)}` : ''),
+  workItems: (offset = 0) => `/api/work-items?offset=${offset}&limit=500`,
+  approvalCopyInstance: (copyId: string, personId: string) =>
+    `/api/approval-copies/${copyId}/instance?person_id=${encodeURIComponent(personId)}`,
   approveTask: (taskId: string) => `/api/approval-tasks/${taskId}/approve`,
   rejectTask: (taskId: string) => `/api/approval-tasks/${taskId}/reject`,
   approvalInstance: (id: string) => `/api/approval-instances/${id}`,

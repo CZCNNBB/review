@@ -21,7 +21,9 @@ from app.server.process.src.constants import (
     NODE_EXECUTION_STATUS_COMPLETED,
     NODE_EXECUTION_STATUS_ERROR,
     NODE_EXECUTION_STATUS_REJECTED,
+    TASK_STATUS_RECEIVED,
     TASK_STATUS_PENDING,
+    TASK_TYPE_COPY,
 )
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.process.src.engine.condition import select_next_connection
@@ -254,17 +256,34 @@ class ApprovalEngine:
     ) -> list[UUID]:
         """读取版本节点配置中的审批人，保持配置顺序并去重。"""
 
-        raw_approvers = node.config_json.get("approvers")
-        if not isinstance(raw_approvers, Sequence) or isinstance(raw_approvers, str):
+        return self._resolve_configured_person_ids(node, "approvers")
+
+    def resolve_copy_recipient_person_ids(
+        self,
+        node: ApprovalProcessVersionNode,
+    ) -> list[UUID]:
+        """读取抄送节点配置的收件人，保持顺序并去重。"""
+
+        return self._resolve_configured_person_ids(node, "recipients")
+
+    @staticmethod
+    def _resolve_configured_person_ids(
+        node: ApprovalProcessVersionNode,
+        field_name: str,
+    ) -> list[UUID]:
+        """从节点配置的人员数组中提取有效且不重复的人员 ID。"""
+
+        raw_people = node.config_json.get(field_name)
+        if not isinstance(raw_people, Sequence) or isinstance(raw_people, str):
             return []
 
         person_ids: list[UUID] = []
         seen_person_ids: set[UUID] = set()
-        for raw_approver in raw_approvers:
-            if not isinstance(raw_approver, Mapping):
+        for raw_person in raw_people:
+            if not isinstance(raw_person, Mapping):
                 continue
             try:
-                person_id = UUID(str(raw_approver.get("person_id")))
+                person_id = UUID(str(raw_person.get("person_id")))
             except (TypeError, ValueError):
                 continue
             if person_id in seen_person_ids:
@@ -272,6 +291,33 @@ class ApprovalEngine:
             seen_person_ids.add(person_id)
             person_ids.append(person_id)
         return person_ids
+
+    def create_copy_records(
+        self,
+        instance: ApprovalInstance,
+        execution: ApprovalNodeExecution,
+        recipient_person_ids: Sequence[UUID],
+        db: Session,
+    ) -> None:
+        """在当前事务里写入已送达的抄送任务，不创建待审批任务。"""
+
+        snapshots = self.load_person_snapshots(recipient_person_ids, db)
+        copies: list[ApprovalTask] = []
+        for person_id in recipient_person_ids:
+            copies.append(
+                ApprovalTask(
+                    instance_id=instance.id,
+                    node_execution_id=execution.id,
+                    recipient_person_id=person_id,
+                    recipient_snapshot_json=snapshots.get(
+                        person_id, {"person_id": str(person_id)}
+                    ),
+                    task_type=TASK_TYPE_COPY,
+                    status=TASK_STATUS_RECEIVED,
+                    extension_json={"delivery_channel": "APPROVAL_CENTER"},
+                )
+            )
+        self.repository.add_copies(copies, db)
 
     def create_approval_tasks(
         self,
@@ -287,8 +333,8 @@ class ApprovalEngine:
             ApprovalTask(
                 instance_id=instance.id,
                 node_execution_id=execution.id,
-                approver_person_id=person_id,
-                approver_snapshot_json=snapshots.get(
+                recipient_person_id=person_id,
+                recipient_snapshot_json=snapshots.get(
                     person_id,
                     {"person_id": str(person_id)},
                 ),

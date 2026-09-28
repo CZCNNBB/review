@@ -12,6 +12,7 @@ from app.server.process.src.engine.nodes.approval import (
 )
 from app.server.process.src.engine.nodes.base import NodeContext, NodeHandler
 from app.server.process.src.engine.nodes.condition import ConditionNodeHandler
+from app.server.process.src.engine.nodes.copy import CopyNodeHandler
 from app.server.process.src.engine.nodes.end import EndNodeHandler
 from app.server.process.src.engine.nodes.registry import NODE_HANDLERS
 from app.server.process.src.engine.nodes.start import StartNodeHandler
@@ -30,6 +31,7 @@ __all__ = [
     "SUPPORTED_NODE_TYPES",
     "ApprovalNodeHandler",
     "ConditionNodeHandler",
+    "CopyNodeHandler",
     "EndNodeHandler",
     "NodeContext",
     "NodeHandler",

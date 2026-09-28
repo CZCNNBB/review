@@ -16,6 +16,7 @@ from app.server.process.src.constants import (
     TASK_STATUS_BY_ACTION,
     TASK_STATUS_PENDING,
     TASK_STATUSES,
+    TASK_TYPE_APPROVAL,
 )
 from app.server.process.src.engine.graph import build_version_graph
 from app.server.process.src.engine.nodes import (
@@ -193,7 +194,10 @@ class ApprovalTaskService:
         task = self.repository.get_task_for_update(task_id, db)
         if task is None:
             raise ApprovalNotFoundError("审批任务不存在")
-        if task.approver_person_id != request.person_id:
+        if task.task_type != TASK_TYPE_APPROVAL:
+            # 即便调用方知道抄送任务 ID，也不能通过审批操作入口处理只读抄送。
+            raise ApprovalStateError("抄送任务仅供查看，不能审批")
+        if task.recipient_person_id != request.person_id:
             raise ApprovalPermissionError("该审批任务不属于当前操作人")
 
         expected_status = TASK_STATUS_BY_ACTION[action]
@@ -223,8 +227,8 @@ class ApprovalTaskService:
                 instance_id=instance.id,
                 node_execution_id=node_execution.id,
                 task_id=task.id,
-                operator_person_id=task.approver_person_id,
-                operator_snapshot_json=dict(task.approver_snapshot_json or {}),
+                operator_person_id=task.recipient_person_id,
+                operator_snapshot_json=dict(task.recipient_snapshot_json or {}),
                 action=action,
                 comment=request.comment,
                 created_at=now,

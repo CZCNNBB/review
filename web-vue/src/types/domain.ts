@@ -11,7 +11,7 @@ export interface Size {
 }
 
 /** 节点执行类型。后端只认这四种，节点定义不能凭空造新类型。 */
-export type NodeType = 'START' | 'APPROVAL' | 'CONDITION' | 'END' | (string & {})
+export type NodeType = 'START' | 'APPROVAL' | 'CONDITION' | 'COPY' | 'END' | (string & {})
 
 export interface FlowNode {
   id: string

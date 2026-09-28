@@ -241,6 +241,34 @@ export interface ApprovalTask {
   duration_ms: number | null
 }
 
+/** 抄送节点产生的只读收件记录。 */
+export interface ApprovalCopy {
+  id: string
+  instance_id: string
+  instance_title: string
+  business_key: string
+  instance_status: string
+  node_name: string
+  recipient_person_id: string
+  recipient_snapshot: Record<string, unknown>
+  created_at: string
+}
+
+/** 统一任务表中的一条工作台记录；抄送任务使用只读的 COPY 类型。 */
+export interface ApprovalWorkItem {
+  id: string
+  task_type: 'APPROVAL' | 'COPY'
+  instance_id: string
+  instance_title: string
+  business_key: string
+  node_name: string
+  person_id: string
+  person_snapshot: Record<string, unknown>
+  task_status: string
+  instance_status: string
+  created_at: string
+}
+
 export interface ApprovalRecord {
   id: string
   instance_id: string

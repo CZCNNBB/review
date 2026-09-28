@@ -11,10 +11,10 @@ import { processApi } from '@/api/modules/process'
 import type { ApprovalTask, BusinessAction, ExecutionRecord, Person, Tenant } from '@/api/types'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution, TimelineRecord } from '@/components/common/ApprovalTimeline.vue'
+import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import type { ColumnSpec } from '@/components/common/DataTable.vue'
-import JsonBlock from '@/components/common/JsonBlock.vue'
 import StatusStamp from '@/components/common/StatusStamp.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import TaskDecisionDialog from '@/components/dialogs/TaskDecisionDialog.vue'
@@ -28,7 +28,6 @@ import { useConfigStore } from '@/stores/config'
 import { useCredentialsStore } from '@/stores/credentials'
 import { formatDuration, formatTime, shortId } from '@/utils/format'
 import { toastError, toastOk } from '@/utils/notify'
-import { formFieldLabels } from '@/utils/schemaForm'
 import type { JSONSchema } from '@/types/domain'
 
 /** 待办里还有 duration_ms（「已等待」列要用），共享类型没写，本地补上。 */
@@ -265,9 +264,6 @@ const detailPairs = computed(() => [
   { key: '业务动作', slot: 'actionCode' },
 ])
 
-/** 审批表单字段的中文名：与流程编辑器共用同一份映射（都来自版本的 form_schema）。 */
-const fieldLabels = computed(() => formFieldLabels(page.value.formSchema))
-
 /** action_code → 业务动作名。查不到就退回编码（动作被删或列表没取到）。 */
 const actionNames = computed(
   () => new Map(page.value.actions.map((action) => [action.action_code, action.name])),
@@ -278,24 +274,6 @@ const actionName = computed(() => {
   if (!code) return ''
   return actionNames.value.get(code) || code
 })
-
-// 表单是业务系统自己定的键值，每一项都要一个插槽：槽名按序号生成，
-// 模板里用动态槽名逐个接上（对象值摆 JsonBlock，标量按文本显示）。
-// 标签取 Schema 里的显示名 —— 给审批人看的是「金额」，不是「JinEr」；
-// 原始字段名挂在标签的悬停提示里，联调时还找得到。
-const formPairs = computed(() =>
-  Object.entries(detail.value?.approval_form || {}).map(([key, raw], index) => {
-    const label = fieldLabels.value[`approval_form.${key}`] || key
-    return {
-      key: label,
-      hint: `字段名 ${key}`,
-      slot: `form-value-${index}`,
-      json: raw !== null && typeof raw === 'object',
-      text: raw === null || raw === undefined ? '—' : String(raw),
-      raw,
-    }
-  }),
-)
 
 const executionPairs = computed(() => {
   if (!execution.value) return []
@@ -348,7 +326,7 @@ onMounted(refresh)
 
 <template>
   <Breadcrumb
-    :items="[{ text: '待办任务', hash: '#/tasks' }, { text: detail?.title || shortId(instanceId) }]"
+    :items="[{ text: '工作台', hash: '#/workbench?type=APPROVAL' }, { text: detail?.title || shortId(instanceId) }]"
   />
 
   <ErrorPanel v-if="error" :error="error" />
@@ -388,13 +366,8 @@ onMounted(refresh)
       </KvDescriptions>
     </PanelCard>
 
-    <PanelCard v-if="formPairs.length" title="审批表单">
-      <KvDescriptions :pairs="formPairs">
-        <template v-for="pair in formPairs" :key="pair.key" #[pair.slot]>
-          <JsonBlock v-if="pair.json" :value="pair.raw" />
-          <span v-else class="code">{{ pair.text }}</span>
-        </template>
-      </KvDescriptions>
+    <PanelCard v-if="Object.keys(detail.approval_form).length" title="审批表单">
+      <ApprovalFormDetails :form="detail.approval_form" :schema="page.formSchema" />
     </PanelCard>
 
     <PanelCard v-if="detail.pending_tasks.length" title="等待处理的待办">

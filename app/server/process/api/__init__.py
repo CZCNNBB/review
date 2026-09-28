@@ -2,6 +2,8 @@
 
 from fastapi import APIRouter
 
+from app.server.process.api.approval_copy_api import router as approval_copy_router
+from app.server.process.api.approval_workbench_api import router as approval_workbench_router
 from app.server.process.api.approval_instance_api import (
     router as approval_instance_router,
 )
@@ -17,6 +19,8 @@ router.include_router(node_definition_router)
 router.include_router(process_router)
 router.include_router(approval_instance_router)
 router.include_router(approval_task_router)
+router.include_router(approval_copy_router)
+router.include_router(approval_workbench_router)
 router.include_router(execution_record_router)
 
 __all__ = ["router"]

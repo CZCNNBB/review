@@ -366,7 +366,7 @@ class ApprovalInstanceService:
             )
 
         pending_person_ids = tuple(
-            task.approver_person_id
+            task.recipient_person_id
             for task in self.repository.list_tasks_by_instance(instance.id, db)
             if task.status == TASK_STATUS_PENDING
         )

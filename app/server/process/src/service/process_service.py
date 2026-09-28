@@ -13,6 +13,7 @@ from app.server.organization.src.service.organization_service import Organizatio
 from app.server.process.src.constants import (
     NODE_ID_OCCUPIED_MESSAGE,
     NODE_TYPE_APPROVAL,
+    NODE_TYPE_COPY,
     PROCESS_COPY_NAME_BASE_MAX_LENGTH,
     PROCESS_COPY_NAME_SUFFIX,
     PROCESS_STATUS_DISABLED,
@@ -617,20 +618,26 @@ class ProcessService:
         definitions: Mapping[UUID, NodeDefinition],
         db: Session,
     ) -> dict[UUID, str]:
-        """批量取回审批人状态，供审批节点校验。"""
+        """批量取回审批人和抄送人状态，供节点人员校验。"""
 
         person_ids: list[UUID] = []
         for node in graph.nodes:
             definition = definitions.get(node.node_definition_id)
-            if definition is None or definition.node_type != NODE_TYPE_APPROVAL:
+            if definition is None or definition.node_type not in {
+                NODE_TYPE_APPROVAL,
+                NODE_TYPE_COPY,
+            }:
                 continue
-            raw_approvers = node.config.get("approvers")
-            if not isinstance(raw_approvers, Sequence) or isinstance(raw_approvers, str):
+            person_field = (
+                "approvers" if definition.node_type == NODE_TYPE_APPROVAL else "recipients"
+            )
+            raw_people = node.config.get(person_field)
+            if not isinstance(raw_people, Sequence) or isinstance(raw_people, str):
                 continue
-            for raw_approver in raw_approvers:
-                if not isinstance(raw_approver, Mapping):
+            for raw_person in raw_people:
+                if not isinstance(raw_person, Mapping):
                     continue
-                raw_person_id = raw_approver.get("person_id")
+                raw_person_id = raw_person.get("person_id")
                 try:
                     person_ids.append(UUID(str(raw_person_id)))
                 except (TypeError, ValueError):

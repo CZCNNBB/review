@@ -72,7 +72,7 @@ const CLOSED_LOOP_STEPS: LoopStep[] = [
   {
     name: '处理待办任务',
     desc: '审批人查看审批单与时间线，同意或拒绝，引擎按 AND / OR 规则推进。',
-    href: '#/tasks',
+    href: '#/workbench?type=APPROVAL',
     key: null,
   },
   {
@@ -234,7 +234,7 @@ onMounted(refresh)
     note="按业务闭环的顺序排列。每一项都可以直接进入对应页面处理；计数来自当前接口返回的数据。"
   >
     <a class="btn" href="#/start">发起审批</a>
-    <a class="btn btn--primary" href="#/tasks">处理待办</a>
+      <a class="btn btn--primary" href="#/workbench?type=APPROVAL&status=PENDING">处理待办</a>
   </PageHead>
 
   <ErrorPanel v-if="error" :error="error" />

@@ -8,12 +8,14 @@
 from app.server.process.src.constants import (
     NODE_TYPE_APPROVAL,
     NODE_TYPE_CONDITION,
+    NODE_TYPE_COPY,
     NODE_TYPE_END,
     NODE_TYPE_START,
 )
 from app.server.process.src.engine.nodes.approval import ApprovalNodeHandler
 from app.server.process.src.engine.nodes.base import NodeHandler
 from app.server.process.src.engine.nodes.condition import ConditionNodeHandler
+from app.server.process.src.engine.nodes.copy import CopyNodeHandler
 from app.server.process.src.engine.nodes.end import EndNodeHandler
 from app.server.process.src.engine.nodes.start import StartNodeHandler
 from app.server.process.src.node_catalog import NODE_TYPES
@@ -23,6 +25,7 @@ NODE_HANDLERS: dict[str, NodeHandler] = {
     NODE_TYPE_START: StartNodeHandler(),
     NODE_TYPE_APPROVAL: ApprovalNodeHandler(),
     NODE_TYPE_CONDITION: ConditionNodeHandler(),
+    NODE_TYPE_COPY: CopyNodeHandler(),
     NODE_TYPE_END: EndNodeHandler(),
 }
 

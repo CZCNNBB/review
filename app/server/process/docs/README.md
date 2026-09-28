@@ -20,7 +20,7 @@ process 统一承载审批流定义、审批运行和审批通过后的业务执
 
 - approval_instance 保存审批单数据、业务执行参数和实例状态。
 - approval_node_execution 保存实例实际经过的节点和实际选择的路径。
-- approval_task 保存人工审批节点为每位审批人创建的待办。
+- approval_task 统一保存审批待办和只读抄送任务，由 task_type 区分。
 - approval_record 保存审批人的实际操作，是不可修改的审计记录。
 
 业务系统只传稳定的 process_id。发起审批时读取 current_version_id，并把版本 ID 绑定到
@@ -144,6 +144,7 @@ engine 包按节点类型分发，已注册的处理器与节点定义中的 nod
 ~~~text
 START      进入后立即完成，按编排选择后续节点
 CONDITION  进入后立即按出线条件选路，不产生人工任务
+COPY       进入后把审批单写入指定人员的抄送列表，立即沿连线继续，不产生审批任务
 APPROVAL   为全部审批人同时创建 PENDING 任务，实例停在该节点
 END        把实例置为 APPROVED（走到这里就是审批通过）、记录结束时间
 ~~~
@@ -157,7 +158,17 @@ END        把实例置为 APPROVED（走到这里就是审批通过）、记录
 
 清单是节点类型的唯一真相：白名单 `SUPPORTED_NODE_TYPES` 与接口校验正则由它派生，注册表在
 import 时断言两边指向同一批类型，应用启动时由 `service/node_definition_sync.py` 把清单写进
-`process.node_definition` —— 所以不用手改数据库，也不用改 `init.sql`。
+`process.node_definition`，因此节点定义本身不用手工插入数据库。抄送节点在
+`process.approval_task` 中生成 `task_type=COPY`、`status=RECEIVED` 的只读任务；
+已有数据库依次执行 `data/migrations/20260928_copy_node.sql` 和
+`data/migrations/20260928_task_recipient_columns.sql`；前者迁入旧抄送记录，后者将接收
+人列统一命名。新建库使用更新后的 `data/init.sql`。
+
+在画布中把「抄送」拖到流程线上，配置至少一名抄送人并连接后续节点。流程进入节点时
+写入抄送任务后立即继续，抄送人无需处理。管理台「工作台」通过 `/api/work-items`
+统一展示审批和抄送，支持按类型、人员、状态筛选；抄送只读详情使用审批表单和会签
+时间线展示流转节点、审批意见。当前项目尚无人员登录态，因此管理台使用管理员密钥
+代为查看。
 
 推进入口是引擎内部的单次循环：进入节点、交给处理器、处理器返回下一个节点 ID 或
 None。None 表示流程需要等待人工处理。已发布版本禁止成环，循环仍然保留步数上限，

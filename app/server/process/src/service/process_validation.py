@@ -19,6 +19,7 @@ from app.server.process.src.constants import (
     MAX_FORM_SCHEMA_DEPTH,
     NODE_DEFINITION_STATUS_ENABLED,
     NODE_TYPE_APPROVAL,
+    NODE_TYPE_COPY,
     NODE_TYPE_END,
     NODE_TYPE_START,
     ORCHESTRATION_CONNECTIONS_KEY,
@@ -30,6 +31,11 @@ from app.server.process.src.constants import (
     RULE_APPROVER_ID_INVALID,
     RULE_APPROVER_NOT_FOUND,
     RULE_APPROVER_REQUIRED,
+    RULE_COPY_RECIPIENT_DISABLED,
+    RULE_COPY_RECIPIENT_DUPLICATE,
+    RULE_COPY_RECIPIENT_INVALID,
+    RULE_COPY_RECIPIENT_NOT_FOUND,
+    RULE_COPY_RECIPIENT_REQUIRED,
     RULE_CONNECTION_CONDITION_INVALID,
     RULE_BRANCH_FALLBACK_INVALID,
     RULE_BRANCH_MISSING_CONDITION,
@@ -69,6 +75,7 @@ _COLOR_BLACK = 2
 # 审批人配置根路径，用于拼装前端可定位的字段路径。
 _APPROVERS_FIELD = "config.approvers"
 _APPROVAL_MODE_FIELD = "config.approval_mode"
+_COPY_RECIPIENTS_FIELD = "config.recipients"
 
 
 @dataclass(frozen=True)
@@ -475,6 +482,7 @@ def validate_graph(
     issues.extend(check_node_definitions(graph, definitions))
     issues.extend(check_node_configs(graph, definitions))
     issues.extend(check_approvers(graph, node_types, person_statuses, include_persons))
+    issues.extend(check_copy_recipients(graph, node_types, person_statuses, include_persons))
     issues.extend(check_start_and_end(graph, node_types))
     issues.extend(check_connection_endpoints(graph, node_types))
     issues.extend(check_topology(graph, node_types))
@@ -692,6 +700,87 @@ def check_approvers(
                     ValidationIssue(
                         code=RULE_APPROVER_DISABLED,
                         message=f"节点「{node.name}」的审批人 {person_id} 已停用",
+                        node_id=node.id,
+                        field=field_path,
+                    )
+                )
+    return issues
+
+
+def check_copy_recipients(
+    graph: ProcessGraph,
+    node_types: Mapping[UUID, str],
+    person_statuses: Mapping[UUID, str],
+    include_persons: bool,
+) -> list[ValidationIssue]:
+    """校验抄送节点至少有一位存在且启用的收件人。"""
+
+    issues: list[ValidationIssue] = []
+    for node in graph.nodes:
+        if node_types.get(node.id) != NODE_TYPE_COPY:
+            continue
+
+        raw_recipients = node.config.get("recipients")
+        if (
+            not isinstance(raw_recipients, Sequence)
+            or isinstance(raw_recipients, str)
+            or not raw_recipients
+        ):
+            issues.append(
+                ValidationIssue(
+                    code=RULE_COPY_RECIPIENT_REQUIRED,
+                    message=f"节点「{node.name}」至少需要配置一名抄送人",
+                    node_id=node.id,
+                    field=_COPY_RECIPIENTS_FIELD,
+                )
+            )
+            continue
+
+        seen_person_ids: set[UUID] = set()
+        for recipient_index, raw_recipient in enumerate(raw_recipients):
+            field_path = f"{_COPY_RECIPIENTS_FIELD}[{recipient_index}].person_id"
+            person_id = None
+            if isinstance(raw_recipient, Mapping):
+                person_id = _parse_uuid(raw_recipient.get("person_id"))
+            if person_id is None:
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_COPY_RECIPIENT_INVALID,
+                        message=f"节点「{node.name}」第 {recipient_index + 1} 名抄送人的人员 ID 无效",
+                        node_id=node.id,
+                        field=field_path,
+                    )
+                )
+                continue
+            if person_id in seen_person_ids:
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_COPY_RECIPIENT_DUPLICATE,
+                        message=f"节点「{node.name}」存在重复的抄送人",
+                        node_id=node.id,
+                        field=field_path,
+                    )
+                )
+                continue
+            seen_person_ids.add(person_id)
+
+            if not include_persons:
+                continue
+            person_status = person_statuses.get(person_id)
+            if person_status is None:
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_COPY_RECIPIENT_NOT_FOUND,
+                        message=f"节点「{node.name}」的抄送人 {person_id} 不存在",
+                        node_id=node.id,
+                        field=field_path,
+                    )
+                )
+            elif person_status != "ENABLED":
+                issues.append(
+                    ValidationIssue(
+                        code=RULE_COPY_RECIPIENT_DISABLED,
+                        message=f"节点「{node.name}」的抄送人 {person_id} 已停用",
                         node_id=node.id,
                         field=field_path,
                     )

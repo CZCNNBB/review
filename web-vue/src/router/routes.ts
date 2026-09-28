@@ -39,7 +39,11 @@ export const routes: RouteRecordRaw[] = [
   // 授权并进了租户详情页。旧链接直接落到租户列表，别让书签掉进 404。
   { path: '/grants', redirect: '/tenants' },
 
-  { path: '/tasks', name: 'tasks', component: () => import('@/views/TasksView.vue') },
+  { path: '/workbench', name: 'workbench', component: () => import('@/views/TasksView.vue') },
+  // 旧任务链接保留，原有 status/person 筛选参数继续生效。
+  { path: '/tasks', redirect: (to) => ({ path: '/workbench', query: to.query }) },
+  { path: '/copies', name: 'copies', component: () => import('@/views/CopiesView.vue') },
+  { path: '/copies/:id', name: 'copy-detail', component: () => import('@/views/CopyDetailView.vue') },
   {
     path: '/instances/:id',
     name: 'instance',
@@ -103,7 +107,7 @@ export const NAV: NavGroup[] = [
   {
     group: '运行',
     items: [
-      { key: 'tasks', hash: '#/tasks', label: '审批任务' },
+      { key: 'workbench', hash: '#/workbench', label: '工作台' },
       { key: 'start', hash: '#/start', label: '发起审批' },
       { key: 'executions', hash: '#/executions', label: '执行记录' },
       { key: 'usages', hash: '#/usages', label: '使用记录' },
@@ -111,10 +115,11 @@ export const NAV: NavGroup[] = [
   },
 ]
 
-/** 子页面归属到哪个导航项高亮：版本编辑器挂在审批流下，审批详情挂在审批任务下。 */
+/** 子页面归属到哪个导航项高亮：审批和抄送详情都挂在工作台下。 */
 const NAV_ALIAS: Record<string, string> = {
   versions: 'processes',
-  instances: 'tasks',
+  instances: 'workbench',
+  copies: 'workbench',
 }
 
 /**

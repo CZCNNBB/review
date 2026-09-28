@@ -258,7 +258,7 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
                 self.db,
             )
         ]
-        return sorted(tasks, key=lambda task: str(task.approver_person_id))
+        return sorted(tasks, key=lambda task: str(task.recipient_person_id))
 
     def get_pending_task(self, instance_id: UUID, person_id: UUID):
         """查询指定人员的待办任务。"""
@@ -467,12 +467,12 @@ class ApprovalRuntimeServiceTestCase(DatabaseTestCaseMixin, unittest.TestCase):
 
         first_tasks = self.get_instance_tasks(first_instance.instance.id)
         self.assertEqual(
-            {task.approver_person_id for task in first_tasks},
+            {task.recipient_person_id for task in first_tasks},
             {self.approver_a},
         )
         second_tasks = self.get_instance_tasks(second_instance.instance.id)
         self.assertEqual(
-            {task.approver_person_id for task in second_tasks},
+            {task.recipient_person_id for task in second_tasks},
             {self.approver_b},
         )
         self.assertIsNotNone(draft_version)

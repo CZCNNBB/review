@@ -1,219 +1,228 @@
 <script setup lang="ts">
-import { ElSelect } from 'element-plus'
-import { computed, onMounted, ref, watch } from 'vue'
+import { ElButton, ElOption, ElSelect } from 'element-plus'
+import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { safe } from '@/api/http'
 import { approvalApi } from '@/api/modules/approval'
-import type { ApprovalTask, Person } from '@/api/types'
+import type { ApprovalWorkItem, Person } from '@/api/types'
 import DataTable from '@/components/common/DataTable.vue'
 import type { ColumnSpec } from '@/components/common/DataTable.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import TaskDecisionDialog from '@/components/dialogs/TaskDecisionDialog.vue'
 import type { TaskDecisionResult } from '@/components/dialogs/TaskDecisionDialog.vue'
+import PersonSelect from '@/components/form/PersonSelect.vue'
 import EmptyState from '@/components/layout/EmptyState.vue'
 import ErrorPanel from '@/components/layout/ErrorPanel.vue'
 import PageHead from '@/components/layout/PageHead.vue'
 import PanelCard from '@/components/layout/PanelCard.vue'
-import PersonSelect from '@/components/form/PersonSelect.vue'
 import { useAsyncPage } from '@/composables/useAsyncPage'
 import { loadPersonDirectory, usePersonDirectory } from '@/composables/usePersonDirectory'
 import { useUrlFilters } from '@/composables/useUrlFilters'
 import { useShellStore } from '@/stores/shell'
-import { formatDuration, formatTime, shortId } from '@/utils/format'
+import { formatTime, shortId } from '@/utils/format'
 import { toastOk } from '@/utils/notify'
 import { statusText } from '@/utils/status'
 
-/** 任务列表里还有 duration_ms（「停留时长」列要用），共享类型没写，本地补上。 */
-type TaskRow = ApprovalTask & { duration_ms?: number | null }
+/** 处理弹窗只需要任务 ID 和所属人员，抄送任务不生成此引用。 */
+type TaskActionRef = { id: string; approver_person_id: string }
+type WorkKind = 'APPROVAL' | 'COPY'
 
-interface TasksData {
+interface WorkRow {
+  id: string
+  kind: WorkKind
+  title: string
+  businessKey: string
+  nodeName: string
+  personId: string
+  personSnapshotName: string
+  status: string
+  createdAt: string
+  detailLink: string
+  task?: TaskActionRef
+}
+
+interface WorkbenchData {
   persons: Person[]
-  tasks: TaskRow[]
+  rows: WorkRow[]
 }
 
 const columns: ColumnSpec[] = [
-  { key: 'instance_title', title: '审批单' },
-  { key: 'business_key', title: '业务单号', width: 170 },
-  { key: 'node_name', title: '节点', width: 150 },
-  { key: 'approver_person_id', title: '审批人', width: 130 },
-  { key: 'status', title: '任务状态', width: 100 },
-  { key: 'created_at', title: '产生时间', width: 160 },
-  { key: 'duration_ms', title: '停留时长', width: 120, align: 'right' },
+  { key: 'kind', title: '任务类型', width: 100 },
+  { key: 'title', title: '审批单' },
+  { key: 'businessKey', title: '业务单号', width: 160 },
+  { key: 'nodeName', title: '当前事项', width: 145 },
+  { key: 'personId', title: '相关人员', width: 130 },
+  { key: 'status', title: '状态', width: 105 },
+  { key: 'createdAt', title: '收到时间', width: 170 },
   { key: 'actions', title: '操作', width: 160, align: 'right' },
 ]
 
 const shell = useShellStore()
 const router = useRouter()
-
-// 筛选条件只认地址栏那一份：刷新、后退、把链接发给别人，看到的都是同一份结果
 const { filter } = useUrlFilters()
-const statusFilter = filter('status', 'PENDING')
+const kindFilter = filter('type', 'ALL')
+const statusFilter = filter('status', 'ALL')
 const personFilter = filter('person')
-
-// 人员筛选的候选：人员目录（带部门标签）+ 一个「全部审批人」的空选项
 const directory = usePersonDirectory()
 const personOptions = computed(() => [
-  { value: '', label: '全部审批人' },
+  { value: '', label: '全部人员' },
   ...directory.options.value,
 ])
 
-const { data, loading, error, refresh } = useAsyncPage<TasksData>(
-  async () => {
-    // 人员是整页的前提（没有人员就没有审批人），这一项不兜底，失败交给错误面板。
-    // 走人员目录取：筛选下拉要用它带的部门标签，这一页也就少发一次人员请求。
-    const persons = (await loadPersonDirectory()).persons
-    if (!persons.length) {
-      shell.setCount('tasks', 0)
-      return { persons, tasks: [] }
-    }
-
-    // 任务查询只有人员维度，管理台在这里扇出到每个人员再合并，得到全量视图（旧版策略，保持）。
-    // 地址栏里的审批人取不到（人员被删或链接写错）时按「全部审批人」处理，避免得到一张
-    // 看起来没有任何任务、却和页头下拉显示不一致的空表。
-    const picked = persons.find((person) => person.id === personFilter.value)
-    const targets = personFilter.value && picked ? [picked] : persons
-    // 「全部状态」就是不传 status，旧版同样把 ALL 变成不带筛选条件
-    const status = statusFilter.value === 'ALL' ? undefined : statusFilter.value
-
-    const groups = await Promise.all(
-      // 单个人员的查询失败只让那部分任务缺失，不该把整页变成错误面板
-      targets.map((person) => safe(approvalApi.tasks(person.id, status), [] as TaskRow[])),
-    )
-    const tasks = groups
-      .flat()
-      .sort(
-        (left, right) => new Date(right.created_at).getTime() - new Date(left.created_at).getTime(),
-      )
-
-    shell.setCount('tasks', tasks.length)
-    return { persons, tasks }
-  },
-  { persons: [], tasks: [] },
-)
-
-/** 待办数只在「只看待办」这一档下提示，与表格里的内容对得上（旧版同此）。 */
-const waiting = computed(() => data.value.tasks.filter((task) => task.status === 'PENDING'))
-const showWaitingNote = computed(() => statusFilter.value === 'PENDING' && waiting.value.length > 0)
-
-const emptyTitle = computed(() =>
-  statusFilter.value === 'PENDING' ? '没有待办任务' : '没有审批记录',
-)
-const emptyHint = computed(() =>
-  statusFilter.value === 'PENDING'
-    ? '业务系统发起审批后，分配给审批人的任务会出现在这里。'
-    : '处理过任务后，记录会保留在这里。',
-)
-
-// 换筛选条件只是一次新查询：不在页面里另存一份状态
-watch([statusFilter, personFilter], () => void refresh())
-
-function personNameOf(personId?: string | null): string {
-  const person = data.value.persons.find((item) => item.id === personId)
-  return person ? person.name : shortId(personId)
+/** 统一接口的任务转为表格行；仅审批类型保留操作引用。 */
+function workRow(item: ApprovalWorkItem): WorkRow {
+  const isCopy = item.task_type === 'COPY'
+  return {
+    id: `${isCopy ? 'copy' : 'approval'}-${item.id}`,
+    kind: item.task_type,
+    title: item.instance_title || '（无标题）',
+    businessKey: item.business_key || '—',
+    nodeName: item.node_name || (isCopy ? '抄送节点' : '审批节点'),
+    personId: item.person_id,
+    personSnapshotName: String(item.person_snapshot?.name || ''),
+    status: isCopy ? item.instance_status : item.task_status,
+    createdAt: item.created_at,
+    detailLink: isCopy
+      ? `#/copies/${item.id}?person=${encodeURIComponent(item.person_id)}`
+      : `#/instances/${item.instance_id}`,
+    task: isCopy ? undefined : { id: item.id, approver_person_id: item.person_id },
+  }
 }
 
-/* ---------------------------------------------------------------------------
-   处理任务：同意 / 拒绝共用 TaskDecisionDialog
-   --------------------------------------------------------------------------- */
+/** 按统一接口的分页大小读取全部任务，避免列表超过一页后被静默截断。 */
+async function loadAllWorkItems(): Promise<ApprovalWorkItem[]> {
+  const allItems: ApprovalWorkItem[] = []
+  const pageSize = 500
+  let offset = 0
+
+  while (true) {
+    const page = await approvalApi.workItems(offset)
+    allItems.push(...page)
+    if (page.length < pageSize) return allItems
+    offset += pageSize
+  }
+}
+
+const { data, loading, error, refresh } = useAsyncPage<WorkbenchData>(
+  async () => {
+    // 人员目录和工作台任务互不依赖，可以同时读取。
+    const [personDirectory, items] = await Promise.all([
+      loadPersonDirectory(),
+      loadAllWorkItems(),
+    ])
+    const persons = personDirectory.persons
+    const rows = items.map(workRow)
+
+    // 导航角标表示真正需要处理的审批待办；抄送无需处理，不计入待办数。
+    shell.setCount('workbench', rows.filter((row) => row.task && row.status === 'PENDING').length)
+    return { persons, rows }
+  },
+  { persons: [], rows: [] },
+)
+
+/** 三个筛选项在浏览器中筛选同一份已加载列表，切换时不重复请求后端。 */
+const visibleRows = computed(() => data.value.rows.filter((row) => {
+  if (kindFilter.value !== 'ALL' && row.kind !== kindFilter.value) return false
+  if (personFilter.value && row.personId !== personFilter.value) return false
+  if (statusFilter.value !== 'ALL' && row.status !== statusFilter.value) return false
+  return true
+}))
+
+const waitingCount = computed(() => visibleRows.value.filter((row) => row.task && row.status === 'PENDING').length)
+
+/** 优先使用创建任务时保存的姓名快照，以免人员改名后旧记录失去可读性。 */
+function personNameOf(row: WorkRow): string {
+  return row.personSnapshotName ||
+    data.value.persons.find((person) => person.id === row.personId)?.name ||
+    shortId(row.personId)
+}
 
 const decisionOpen = ref(false)
 const decisionKind = ref<'approve' | 'reject'>('approve')
-const decisionTask = ref<TaskRow | null>(null)
+const decisionTask = ref<TaskActionRef | null>(null)
+const decisionApproverName = computed(() => {
+  const task = decisionTask.value
+  if (!task) return '—'
+  const row = data.value.rows.find((item) => item.task?.id === task.id)
+  return row ? personNameOf(row) : shortId(task.approver_person_id)
+})
 
-const decisionApproverName = computed(() => personNameOf(decisionTask.value?.approver_person_id))
-
-function openDecision(task: TaskRow, kind: 'approve' | 'reject'): void {
+/** 打开审批操作弹窗；抄送行没有任务对象，因此不会进入本方法。 */
+function openDecision(task: TaskActionRef, kind: 'approve' | 'reject'): void {
   decisionKind.value = kind
   decisionTask.value = task
   decisionOpen.value = true
 }
 
+/** 审批完成后刷新工作台，并打开对应审批单详情。 */
 async function afterDecided(result: TaskDecisionResult): Promise<void> {
   toastOk(
     `已${decisionKind.value === 'approve' ? '同意' : '拒绝'}，审批单当前状态 ${statusText(result.instance_status)}`,
   )
-  // 旧版：拿到审批单就跳详情，拿不到（接口没回 instance_id）就留在列表上刷新
+  await refresh()
   if (result.instance_id) void router.push(`/instances/${result.instance_id}`)
-  else await refresh()
 }
 
 onMounted(refresh)
 </script>
 
 <template>
-  <PageHead
-    title="审批任务"
-    note="全部审批人的任务集中在这里，按产生时间倒序。管理台代为处理时使用任务所属审批人的身份，用于联调和验收测试。"
-  >
-    <PersonSelect
-      v-if="data.persons.length"
-      v-model="personFilter"
-      :options="personOptions"
-      placeholder="全部审批人"
-      style="width: 200px"
-    />
-    <ElSelect v-if="data.persons.length" v-model="statusFilter" style="width: 140px">
-      <ElOption value="PENDING" label="只看待办" />
-      <ElOption value="ALL" label="全部状态" />
+  <PageHead title="工作台" note="审批任务和抄送记录按收到时间汇总。审批任务可以处理，抄送记录仅供查看。">
+    <ElSelect v-model="kindFilter" style="width: 145px">
+      <ElOption value="ALL" label="全部类型" />
+      <ElOption value="APPROVAL" label="只看审批" />
+      <ElOption value="COPY" label="只看抄送" />
     </ElSelect>
+    <PersonSelect v-model="personFilter" :options="personOptions" placeholder="全部人员" style="width: 200px" />
+    <ElSelect v-model="statusFilter" style="width: 140px">
+      <ElOption value="ALL" label="全部状态" />
+      <ElOption value="PENDING" label="待办" />
+      <ElOption value="APPROVED" label="已通过" />
+      <ElOption value="REJECTED" label="已拒绝" />
+      <ElOption value="CANCELLED" label="已取消" />
+      <ElOption value="RUNNING" label="审批中" />
+      <ElOption value="ERROR" label="异常" />
+    </ElSelect>
+    <ElButton :loading="loading" @click="refresh()">刷新</ElButton>
   </PageHead>
 
   <ErrorPanel v-if="error" :error="error" />
-
-  <PanelCard v-else-if="!loading && !data.persons.length">
-    <EmptyState title="还没有人员" hint="审批任务分配给具体人员，先维护人员再配置审批流。">
+  <PanelCard v-else-if="!loading && !data.persons.length && !data.rows.length">
+    <EmptyState title="还没有工作记录" hint="维护人员并发起审批后，审批任务和抄送记录会出现在这里。">
       <a class="btn btn--sm" href="#/people">去维护人员</a>
     </EmptyState>
   </PanelCard>
-
   <PanelCard v-else>
-    <div v-if="showWaitingNote" class="note note--work waiting-note">
-      当前有 {{ waiting.length }} 条待办等待处理。
+    <div v-if="waitingCount" class="note note--work waiting-note">
+      当前列表有 {{ waitingCount }} 条审批待办等待处理。
     </div>
-
     <DataTable
       :columns="columns"
-      :rows="data.tasks"
+      :rows="visibleRows"
+      row-key="id"
       :loading="loading"
-      :empty-title="emptyTitle"
-      :empty-hint="emptyHint"
+      empty-title="没有符合筛选条件的记录"
+      empty-hint="可以切换任务类型、人员或状态查看其他记录。"
     >
-      <template #cell-instance_title="{ row }">
-        <a class="cell-title" :href="`#/instances/${row.instance_id}`">
-          {{ row.instance_title || '（无标题）' }}
-        </a>
+      <template #cell-kind="{ row }">
+        <span class="work-kind" :class="row.kind === 'COPY' ? 'work-kind--copy' : 'work-kind--approval'">
+          {{ row.kind === 'COPY' ? '抄送' : '审批' }}
+        </span>
       </template>
-      <template #cell-business_key="{ row }">
-        <span class="code">{{ row.business_key || '—' }}</span>
+      <template #cell-title="{ row }">
+        <a class="cell-title" :href="row.detailLink">{{ row.title }}</a>
       </template>
-      <template #cell-node_name="{ row }">{{ row.node_name || '—' }}</template>
-      <template #cell-approver_person_id="{ row }">
-        {{ personNameOf(row.approver_person_id) }}
-      </template>
-      <template #cell-status="{ row }">
-        <StatusTag :status="row.status" />
-      </template>
-      <template #cell-created_at="{ row }">
-        <span class="muted">{{ formatTime(row.created_at) }}</span>
-      </template>
-      <template #cell-duration_ms="{ row }">
-        <span class="muted">{{ formatDuration(row.duration_ms) }}</span>
-      </template>
+      <template #cell-businessKey="{ row }"><span class="code">{{ row.businessKey }}</span></template>
+      <template #cell-nodeName="{ row }">{{ row.nodeName }}</template>
+      <template #cell-personId="{ row }">{{ personNameOf(row) }}</template>
+      <template #cell-status="{ row }"><StatusTag :status="row.status" /></template>
+      <template #cell-createdAt="{ row }"><span class="muted">{{ formatTime(row.createdAt) }}</span></template>
       <template #cell-actions="{ row }">
-        <template v-if="row.status === 'PENDING'">
-          <button class="btn--link btn--sm" type="button" @click="openDecision(row, 'approve')">
-            同意
-          </button>
-          <button
-            class="btn--link btn--sm is-danger"
-            type="button"
-            @click="openDecision(row, 'reject')"
-          >
-            拒绝
-          </button>
+        <template v-if="row.task && row.status === 'PENDING'">
+          <button class="btn--link btn--sm" type="button" @click="openDecision(row.task, 'approve')">同意</button>
+          <button class="btn--link btn--sm is-danger" type="button" @click="openDecision(row.task, 'reject')">拒绝</button>
         </template>
-        <a class="btn--link btn--sm" :href="`#/instances/${row.instance_id}`">详情</a>
+        <a class="btn--link btn--sm" :href="row.detailLink">{{ row.kind === 'COPY' ? '查看' : '详情' }}</a>
       </template>
     </DataTable>
   </PanelCard>
@@ -228,14 +237,33 @@ onMounted(refresh)
 </template>
 
 <style scoped>
-/* 旧版的 .muted / .cell-title 只写在 .tbl 作用域里，AntD 的表格里匹配不到，这里补一条 */
+/* 类型标签在第一列明确区分可处理审批和只读抄送。 */
+.work-kind {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid;
+  font-weight: 700;
+  font-size: 12px;
+  letter-spacing: 1px;
+}
+.work-kind--approval {
+  color: var(--indigo);
+  background: var(--indigo-wash);
+  border-color: #c3d2e4;
+}
+.work-kind--copy {
+  color: #176b62;
+  background: #e5f5f1;
+  border-color: #9ad3c9;
+}
 .muted {
   color: var(--ink-3);
 }
 .cell-title {
   font-weight: 600;
 }
-/* 待办提示条与表格之间留一段间距（旧版靠面板头部的 padding 分隔） */
 .waiting-note {
   margin-bottom: 14px;
 }

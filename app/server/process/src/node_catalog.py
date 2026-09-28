@@ -16,6 +16,7 @@ from uuid import UUID
 from app.server.process.src.constants import (
     NODE_TYPE_APPROVAL,
     NODE_TYPE_CONDITION,
+    NODE_TYPE_COPY,
     NODE_TYPE_END,
     NODE_TYPE_START,
 )
@@ -110,6 +111,39 @@ NODE_TYPES: dict[str, NodeTypeSpec] = {
             "properties": {},
         },
         ui_schema_json={"ui:order": []},
+    ),
+    NODE_TYPE_COPY: NodeTypeSpec(
+        id=UUID("00000000-0000-0000-0000-000000000105"),
+        name="抄送节点",
+        description="进入节点时把审批单发送到指定人员的抄送列表，然后立即继续流程",
+        icon="send",
+        config_schema_json={
+            "type": "object",
+            "title": "抄送节点",
+            "additionalProperties": False,
+            "required": ["recipients"],
+            "properties": {
+                "recipients": {
+                    "type": "array",
+                    "title": "抄送人",
+                    "description": "选择可以查看这张审批单的人员",
+                    "minItems": 1,
+                    "items": {
+                        "type": "object",
+                        "additionalProperties": False,
+                        "required": ["person_id"],
+                        "properties": {
+                            "person_id": {
+                                "type": "string",
+                                "format": "uuid",
+                                "title": "人员 ID",
+                            }
+                        },
+                    },
+                }
+            },
+        },
+        ui_schema_json={"recipients": {"ui:widget": "person-select"}},
     ),
     NODE_TYPE_END: NodeTypeSpec(
         id=UUID("00000000-0000-0000-0000-000000000103"),

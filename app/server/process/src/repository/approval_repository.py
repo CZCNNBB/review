@@ -9,6 +9,8 @@ from app.server.process.src.constants import (
     NODE_EXECUTION_STATUS_ACTIVE,
     TASK_STATUS_CANCELLED,
     TASK_STATUS_PENDING,
+    TASK_TYPE_APPROVAL,
+    TASK_TYPE_COPY,
 )
 from app.server.process.src.models.approval_model import (
     ApprovalInstance,
@@ -195,7 +197,10 @@ class ApprovalRepository:
 
         statement = (
             select(ApprovalTask)
-            .where(ApprovalTask.node_execution_id == node_execution_id)
+            .where(
+                ApprovalTask.node_execution_id == node_execution_id,
+                ApprovalTask.task_type == TASK_TYPE_APPROVAL,
+            )
             .order_by(ApprovalTask.created_at.asc(), ApprovalTask.id.asc())
         )
         return list(db.exec(statement).all())
@@ -209,7 +214,10 @@ class ApprovalRepository:
 
         statement = (
             select(ApprovalTask)
-            .where(ApprovalTask.instance_id == instance_id)
+            .where(
+                ApprovalTask.instance_id == instance_id,
+                ApprovalTask.task_type == TASK_TYPE_APPROVAL,
+            )
             .order_by(ApprovalTask.created_at.asc(), ApprovalTask.id.asc())
         )
         return list(db.exec(statement).all())
@@ -225,12 +233,29 @@ class ApprovalRepository:
         """按人员查询待办或已办任务，按创建时间倒序分页。"""
 
         statement = select(ApprovalTask).where(
-            ApprovalTask.approver_person_id == person_id
+            ApprovalTask.recipient_person_id == person_id,
+            ApprovalTask.task_type == TASK_TYPE_APPROVAL,
         )
         if statuses:
             statement = statement.where(ApprovalTask.status.in_(statuses))
         statement = (
             statement.order_by(ApprovalTask.created_at.desc(), ApprovalTask.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(db.exec(statement).all())
+
+    def list_work_items(
+        self,
+        db: Session,
+        offset: int = 0,
+        limit: int = 500,
+    ) -> list[ApprovalTask]:
+        """统一读取审批和抄送任务，供管理台工作台按收件时间展示。"""
+
+        statement = (
+            select(ApprovalTask)
+            .order_by(ApprovalTask.created_at.desc(), ApprovalTask.id.desc())
             .offset(offset)
             .limit(limit)
         )
@@ -284,6 +309,56 @@ class ApprovalRepository:
         """在内存对象上逐个取消任务，保持会话中的状态与数据库一致。"""
 
         return sum(1 for task in tasks if self.cancel_task(task, now, db))
+
+    # ------------------------------------------------------------------
+    # 抄送记录
+    # ------------------------------------------------------------------
+
+    def add_copies(self, copies: list[ApprovalTask], db: Session) -> None:
+        """在当前审批事务内向统一任务表写入只读抄送任务。"""
+
+        for copy in copies:
+            db.add(copy)
+
+    def list_person_copies(
+        self,
+        person_id: UUID | None,
+        db: Session,
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[ApprovalTask]:
+        """按抄送时间倒序查询记录；未指定人员时展示管理台全部记录。"""
+
+        statement = select(ApprovalTask).where(ApprovalTask.task_type == TASK_TYPE_COPY)
+        if person_id is not None:
+            statement = statement.where(ApprovalTask.recipient_person_id == person_id)
+        statement = (
+            statement.order_by(ApprovalTask.created_at.desc(), ApprovalTask.id.desc())
+            .offset(offset)
+            .limit(limit)
+        )
+        return list(db.exec(statement).all())
+
+    def get_copy_by_id(self, copy_id: UUID, db: Session) -> ApprovalTask | None:
+        """按主键读取抄送类型的统一任务，防止审批任务被当成抄送打开。"""
+
+        task = db.get(ApprovalTask, copy_id)
+        if task is None or task.task_type != TASK_TYPE_COPY:
+            return None
+        return task
+
+    def list_copies_by_instance(self, instance_id: UUID, db: Session) -> list[ApprovalTask]:
+        """查询审批实例的全部抄送记录，供详情和时间线展示。"""
+
+        statement = (
+            select(ApprovalTask)
+            .where(
+                ApprovalTask.instance_id == instance_id,
+                ApprovalTask.task_type == TASK_TYPE_COPY,
+            )
+            .order_by(ApprovalTask.created_at.asc(), ApprovalTask.id.asc())
+        )
+        return list(db.exec(statement).all())
 
     # ------------------------------------------------------------------
     # 审批记录
