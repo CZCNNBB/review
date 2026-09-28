@@ -1,6 +1,7 @@
 """审批实例、节点执行、审批任务和时间线的请求响应模型。"""
 
 from datetime import datetime
+from typing import Literal
 from typing import Any
 from uuid import UUID
 
@@ -65,6 +66,12 @@ class ApprovalTaskActionRequest(BaseModel):
         return normalize_optional_text(value)
 
 
+class ApprovalTaskDecisionRequest(ApprovalTaskActionRequest):
+    """统一提交同意或拒绝，action 只接受明确的审批结果。"""
+
+    action: Literal["APPROVE", "REJECT"]
+
+
 class ApprovalNodeExecutionResponse(BaseModel):
     """实例实际经过的一个节点。"""
 
@@ -101,20 +108,6 @@ class ApprovalTaskResponse(BaseModel):
     duration_ms: int | None
 
 
-class ApprovalCopyResponse(BaseModel):
-    """抄送收件箱中的一条只读审批单。"""
-
-    id: UUID
-    instance_id: UUID
-    instance_title: str
-    business_key: str
-    instance_status: str
-    node_name: str
-    recipient_person_id: UUID
-    recipient_snapshot: dict[str, Any]
-    created_at: datetime
-
-
 class ApprovalWorkItemResponse(BaseModel):
     """工作台中的审批或抄送任务，由 task_type 明确区分。"""
 
@@ -129,6 +122,9 @@ class ApprovalWorkItemResponse(BaseModel):
     task_status: str
     instance_status: str
     created_at: datetime
+    handled_at: datetime | None
+    cancelled_at: datetime | None
+    duration_ms: int | None
 
 
 class ApprovalRecordResponse(BaseModel):
@@ -154,18 +150,6 @@ class ApprovalTimelineEntryResponse(BaseModel):
     records: list[ApprovalRecordResponse]
 
 
-class ApprovalTimelineResponse(BaseModel):
-    """审批实例的完整运行时间线。"""
-
-    instance_id: UUID
-    title: str
-    status: str
-    started_at: datetime
-    finished_at: datetime | None
-    duration_ms: int | None
-    entries: list[ApprovalTimelineEntryResponse]
-
-
 class ApprovalInstanceDetailResponse(BaseModel):
     """审批详情，供后台详情页展示运行状态和处理过程。"""
 
@@ -185,6 +169,7 @@ class ApprovalInstanceDetailResponse(BaseModel):
     node_executions: list[ApprovalNodeExecutionResponse]
     tasks: list[ApprovalTaskResponse]
     records: list[ApprovalRecordResponse]
+    timeline_entries: list[ApprovalTimelineEntryResponse]
     pending_tasks: list[ApprovalTaskResponse]
     started_at: datetime
     finished_at: datetime | None

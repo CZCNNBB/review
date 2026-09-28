@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ElButton, ElOption, ElSelect } from 'element-plus'
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { approvalApi } from '@/api/modules/approval'
@@ -36,6 +36,7 @@ interface WorkRow {
   personId: string
   personSnapshotName: string
   status: string
+  instanceStatus: string
   createdAt: string
   detailLink: string
   task?: TaskActionRef
@@ -52,7 +53,8 @@ const columns: ColumnSpec[] = [
   { key: 'businessKey', title: '业务单号', width: 160 },
   { key: 'nodeName', title: '当前事项', width: 145 },
   { key: 'personId', title: '相关人员', width: 130 },
-  { key: 'status', title: '状态', width: 105 },
+  { key: 'status', title: '任务状态', width: 105 },
+  { key: 'instanceStatus', title: '审批单状态', width: 110 },
   { key: 'createdAt', title: '收到时间', width: 170 },
   { key: 'actions', title: '操作', width: 160, align: 'right' },
 ]
@@ -80,7 +82,8 @@ function workRow(item: ApprovalWorkItem): WorkRow {
     nodeName: item.node_name || (isCopy ? '抄送节点' : '审批节点'),
     personId: item.person_id,
     personSnapshotName: String(item.person_snapshot?.name || ''),
-    status: isCopy ? item.instance_status : item.task_status,
+    status: item.task_status,
+    instanceStatus: item.instance_status,
     createdAt: item.created_at,
     detailLink: isCopy
       ? `#/copies/${item.id}?person=${encodeURIComponent(item.person_id)}`
@@ -89,14 +92,18 @@ function workRow(item: ApprovalWorkItem): WorkRow {
   }
 }
 
-/** 按统一接口的分页大小读取全部任务，避免列表超过一页后被静默截断。 */
-async function loadAllWorkItems(): Promise<ApprovalWorkItem[]> {
+/** 带同一组筛选条件读取所有分页，避免跨页时遗漏匹配任务。 */
+async function loadAllWorkItems(filters: {
+  personId?: string
+  taskType?: string
+  status?: string
+}): Promise<ApprovalWorkItem[]> {
   const allItems: ApprovalWorkItem[] = []
   const pageSize = 500
   let offset = 0
 
   while (true) {
-    const page = await approvalApi.workItems(offset)
+    const page = await approvalApi.workItems({ ...filters, offset })
     allItems.push(...page)
     if (page.length < pageSize) return allItems
     offset += pageSize
@@ -105,30 +112,26 @@ async function loadAllWorkItems(): Promise<ApprovalWorkItem[]> {
 
 const { data, loading, error, refresh } = useAsyncPage<WorkbenchData>(
   async () => {
+    // 本次请求固定筛选快照；切换筛选时由 useAsyncPage 丢弃旧请求结果。
+    const filters = {
+      personId: personFilter.value || undefined,
+      taskType: kindFilter.value === 'ALL' ? undefined : kindFilter.value,
+      status: statusFilter.value === 'ALL' ? undefined : statusFilter.value,
+    }
     // 人员目录和工作台任务互不依赖，可以同时读取。
     const [personDirectory, items] = await Promise.all([
       loadPersonDirectory(),
-      loadAllWorkItems(),
+      loadAllWorkItems(filters),
     ])
     const persons = personDirectory.persons
     const rows = items.map(workRow)
 
-    // 导航角标表示真正需要处理的审批待办；抄送无需处理，不计入待办数。
-    shell.setCount('workbench', rows.filter((row) => row.task && row.status === 'PENDING').length)
     return { persons, rows }
   },
   { persons: [], rows: [] },
 )
 
-/** 三个筛选项在浏览器中筛选同一份已加载列表，切换时不重复请求后端。 */
-const visibleRows = computed(() => data.value.rows.filter((row) => {
-  if (kindFilter.value !== 'ALL' && row.kind !== kindFilter.value) return false
-  if (personFilter.value && row.personId !== personFilter.value) return false
-  if (statusFilter.value !== 'ALL' && row.status !== statusFilter.value) return false
-  return true
-}))
-
-const waitingCount = computed(() => visibleRows.value.filter((row) => row.task && row.status === 'PENDING').length)
+const waitingCount = computed(() => data.value.rows.filter((row) => row.task && row.status === 'PENDING').length)
 
 /** 优先使用创建任务时保存的姓名快照，以免人员改名后旧记录失去可读性。 */
 function personNameOf(row: WorkRow): string {
@@ -164,6 +167,12 @@ async function afterDecided(result: TaskDecisionResult): Promise<void> {
 }
 
 onMounted(refresh)
+// URL 中的筛选项改变后重新查询服务端，保持链接与列表结果一致。
+watch([kindFilter, statusFilter, personFilter], () => { void refresh() })
+// 仅已被 useAsyncPage 接受的新结果可以更新导航角标，避免旧请求覆盖新筛选。
+watch(data, (current) => {
+  shell.setCount('workbench', current.rows.filter((row) => row.task && row.status === 'PENDING').length)
+})
 </script>
 
 <template>
@@ -177,11 +186,11 @@ onMounted(refresh)
     <ElSelect v-model="statusFilter" style="width: 140px">
       <ElOption value="ALL" label="全部状态" />
       <ElOption value="PENDING" label="待办" />
+      <ElOption value="COMPLETED" label="已完成" />
       <ElOption value="APPROVED" label="已通过" />
       <ElOption value="REJECTED" label="已拒绝" />
       <ElOption value="CANCELLED" label="已取消" />
-      <ElOption value="RUNNING" label="审批中" />
-      <ElOption value="ERROR" label="异常" />
+      <ElOption value="RECEIVED" label="已送达" />
     </ElSelect>
     <ElButton :loading="loading" @click="refresh()">刷新</ElButton>
   </PageHead>
@@ -198,7 +207,7 @@ onMounted(refresh)
     </div>
     <DataTable
       :columns="columns"
-      :rows="visibleRows"
+      :rows="data.rows"
       row-key="id"
       :loading="loading"
       empty-title="没有符合筛选条件的记录"
@@ -216,6 +225,7 @@ onMounted(refresh)
       <template #cell-nodeName="{ row }">{{ row.nodeName }}</template>
       <template #cell-personId="{ row }">{{ personNameOf(row) }}</template>
       <template #cell-status="{ row }"><StatusTag :status="row.status" /></template>
+      <template #cell-instanceStatus="{ row }"><StatusTag :status="row.instanceStatus" /></template>
       <template #cell-createdAt="{ row }"><span class="muted">{{ formatTime(row.createdAt) }}</span></template>
       <template #cell-actions="{ row }">
         <template v-if="row.task && row.status === 'PENDING'">

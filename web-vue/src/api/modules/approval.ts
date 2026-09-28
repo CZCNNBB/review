@@ -2,10 +2,7 @@ import { endpoints } from '../endpoints'
 import { api } from '../http'
 import type {
   ApprovalActionResult,
-  ApprovalCopy,
   ApprovalInstanceDetail,
-  ApprovalTask,
-  ApprovalTimeline,
   ApprovalWorkItem,
   StartedInstance,
   TenantContext,
@@ -23,6 +20,7 @@ export interface StartInstanceInput {
 export interface TaskDecisionInput {
   /** 以哪个审批人的身份处理（管理台代审批）。 */
   person_id: string
+  action: 'APPROVE' | 'REJECT'
   comment?: string | null
 }
 
@@ -34,30 +32,19 @@ export const approvalApi = {
   start: (processId: string, input: StartInstanceInput, apiKey?: string) =>
     api.post<StartedInstance>(endpoints.startInstance(processId), input, 'apikey', apiKey),
 
-  tasks: (personId: string, status?: string) =>
-    api.get<ApprovalTask[]>(endpoints.approvalTasks(personId, status)),
+  /** 按接收人、类型、状态筛选统一任务表，并按收件时间分页。 */
+  workItems: (params: { personId?: string; taskType?: string; status?: string; offset: number }) =>
+    api.get<ApprovalWorkItem[]>(endpoints.workItems(params)),
 
-  /** 默认查询全部抄送记录，也可只看指定人员。 */
-  copies: (personId?: string) =>
-    api.get<ApprovalCopy[]>(endpoints.approvalCopies(personId)),
+  /** 按统一任务 ID 打开审批单，适用于审批和抄送任务。 */
+  workItemInstance: (taskId: string, personId: string) =>
+    api.get<ApprovalInstanceDetail>(endpoints.workItemInstance(taskId, personId)),
 
-  /** 从统一任务表查询审批与抄送工作台。 */
-  workItems: (offset = 0) =>
-    api.get<ApprovalWorkItem[]>(endpoints.workItems(offset)),
-
-  /** 从抄送记录打开审批单，只提供查看能力。 */
-  copiedInstance: (copyId: string, personId: string) =>
-    api.get<ApprovalInstanceDetail>(endpoints.approvalCopyInstance(copyId, personId)),
-
-  approve: (taskId: string, input: TaskDecisionInput) =>
-    api.post<ApprovalActionResult>(endpoints.approveTask(taskId), input),
-
-  reject: (taskId: string, input: TaskDecisionInput) =>
-    api.post<ApprovalActionResult>(endpoints.rejectTask(taskId), input),
+  /** 审批结果作为参数提交到统一任务处理接口。 */
+  decide: (taskId: string, input: TaskDecisionInput) =>
+    api.post<ApprovalActionResult>(endpoints.decideTask(taskId), input),
 
   instance: (id: string, apiKey?: string) =>
     api.get<ApprovalInstanceDetail>(endpoints.approvalInstance(id), 'apikey', apiKey),
 
-  timeline: (id: string, apiKey?: string) =>
-    api.get<ApprovalTimeline>(endpoints.instanceTimeline(id), 'apikey', apiKey),
 }

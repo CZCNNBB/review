@@ -9,7 +9,11 @@ from app.server.process.src.engine.nodes.copy import CopyNodeHandler
 from app.server.process.src.engine.runner import ApprovalEngine
 from app.server.process.src.schemas.approval_schema import ApprovalTaskActionRequest
 from app.server.process.src.service.approval_task_service import ApprovalTaskService
-from app.server.process.src.service.exceptions import ApprovalStateError
+from app.server.process.src.service.approval_workbench_service import ApprovalWorkbenchService
+from app.server.process.src.service.exceptions import (
+    ApprovalPermissionError,
+    ApprovalStateError,
+)
 
 
 class CopyNodeTestCase(unittest.TestCase):
@@ -42,7 +46,7 @@ class CopyNodeTestCase(unittest.TestCase):
         engine.create_approval_tasks.assert_not_called()
 
     def test_engine_creates_one_read_only_record_per_recipient(self) -> None:
-        """抄送记录保存人员快照，且不进入审批任务表。"""
+        """抄送记录保存人员快照，并以 COPY 类型写入统一任务表。"""
 
         recipient_id = uuid4()
         repository = MagicMock()
@@ -92,3 +96,32 @@ class CopyNodeTestCase(unittest.TestCase):
             )
 
         repository.add_record.assert_not_called()
+
+    def test_unified_task_detail_checks_recipient_for_copy(self) -> None:
+        """统一详情入口可读取抄送审批单，并拒绝非收件人查看。"""
+
+        recipient_id = uuid4()
+        task = SimpleNamespace(
+            id=uuid4(),
+            instance_id=uuid4(),
+            recipient_person_id=recipient_id,
+            task_type="COPY",
+        )
+        repository = MagicMock()
+        repository.get_task_by_id.return_value = task
+        instance_service = MagicMock()
+        expected_view = object()
+        instance_service.get_instance_view.return_value = expected_view
+        service = ApprovalWorkbenchService(
+            repository=repository,
+            instance_service=instance_service,
+        )
+        db = MagicMock()
+
+        self.assertIs(
+            service.get_recipient_instance_view(task.id, recipient_id, db),
+            expected_view,
+        )
+        instance_service.get_instance_view.assert_called_once_with(task.instance_id, db)
+        with self.assertRaises(ApprovalPermissionError):
+            service.get_recipient_instance_view(task.id, uuid4(), db)

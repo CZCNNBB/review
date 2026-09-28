@@ -1,4 +1,4 @@
-"""审批实例发起、详情和运行时间线接口。"""
+"""审批实例发起及包含运行时间线的统一详情接口。"""
 
 from uuid import UUID
 
@@ -32,7 +32,6 @@ from app.server.process.src.schemas.approval_schema import (
     ApprovalStartRequest,
     ApprovalTaskResponse,
     ApprovalTimelineEntryResponse,
-    ApprovalTimelineResponse,
 )
 from app.server.process.src.service.approval_instance_service import (
     ApprovalInstanceService,
@@ -113,9 +112,12 @@ def build_instance_responses(
 
 
 def build_detail_response(view: InstanceDetailView) -> ApprovalInstanceDetailResponse:
-    """组装审批详情响应。"""
+    """一次性组装审批详情和按节点归组的运行时间线。"""
 
     node_responses, task_responses, record_responses = build_instance_responses(view)
+    timeline_entries = build_timeline_entries(
+        view, node_responses, task_responses, record_responses
+    )
 
     current_node = None
     if view.instance.current_node_execution_id is not None:
@@ -146,6 +148,7 @@ def build_detail_response(view: InstanceDetailView) -> ApprovalInstanceDetailRes
         node_executions=node_responses,
         tasks=task_responses,
         records=record_responses,
+        timeline_entries=timeline_entries,
         pending_tasks=[
             response
             for response, task in zip(task_responses, view.tasks)
@@ -159,10 +162,15 @@ def build_detail_response(view: InstanceDetailView) -> ApprovalInstanceDetailRes
     )
 
 
-def build_timeline_response(view: InstanceDetailView) -> ApprovalTimelineResponse:
-    """按实际执行顺序组装运行时间线，每个节点带上自己的任务和审批记录。"""
+def build_timeline_entries(
+    view: InstanceDetailView,
+    node_responses: list[ApprovalNodeExecutionResponse],
+    task_responses: list[ApprovalTaskResponse],
+    record_responses: list[ApprovalRecordResponse],
+) -> list[ApprovalTimelineEntryResponse]:
+    """把已转换的节点、任务与审批记录按节点关联，避免重复转换详情数据。"""
 
-    node_responses, task_responses, record_responses = build_instance_responses(view)
+    # 通过原始对象中的 node_execution_id 归组，保持相同节点下任务和意见的顺序。
     task_responses_by_execution: dict[UUID, list[ApprovalTaskResponse]] = {}
     for task, response in zip(view.tasks, task_responses):
         task_responses_by_execution.setdefault(task.node_execution_id, []).append(
@@ -174,7 +182,7 @@ def build_timeline_response(view: InstanceDetailView) -> ApprovalTimelineRespons
             response
         )
 
-    entries = [
+    return [
         ApprovalTimelineEntryResponse(
             node_execution=response,
             tasks=task_responses_by_execution.get(execution.id, []),
@@ -183,15 +191,6 @@ def build_timeline_response(view: InstanceDetailView) -> ApprovalTimelineRespons
         for execution, response in zip(view.node_executions, node_responses)
     ]
 
-    return ApprovalTimelineResponse(
-        instance_id=view.instance.id,
-        title=view.instance.title,
-        status=view.instance.status,
-        started_at=view.instance.started_at,
-        finished_at=view.instance.finished_at,
-        duration_ms=elapsed_ms(view.instance.started_at, view.instance.finished_at),
-        entries=entries,
-    )
 
 
 def get_accessible_instance_view(
@@ -266,27 +265,6 @@ def get_approval_instance(
     try:
         view = get_accessible_instance_view(instance_id, context, db)
         return Result.success(build_detail_response(view))
-    except ApprovalNotFoundError as exc:
-        raise_process_http_error(exc)
-    except TenantResourceAccessError as exc:
-        raise_business_access_http_error(exc)
-
-
-@router.get(
-    "/approval-instances/{instance_id}/timeline",
-    response_model=Result[ApprovalTimelineResponse],
-    summary="查询审批运行时间线",
-)
-def get_approval_instance_timeline(
-    instance_id: UUID,
-    context: BusinessAccessContext = use_business_access_context(),
-    db: Session = Depends(get_postgres_engine),
-) -> Result[ApprovalTimelineResponse]:
-    """按实际执行顺序返回经过的节点、任务和审批记录。"""
-
-    try:
-        view = get_accessible_instance_view(instance_id, context, db)
-        return Result.success(build_timeline_response(view))
     except ApprovalNotFoundError as exc:
         raise_process_http_error(exc)
     except TenantResourceAccessError as exc:

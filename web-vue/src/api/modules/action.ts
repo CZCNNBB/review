@@ -2,7 +2,7 @@ import type { JSONSchema } from '@/types/domain'
 
 import { endpoints } from '../endpoints'
 import { api } from '../http'
-import type { BusinessAction, BusinessActionBinding, ExecutionRecord } from '../types'
+import type { BusinessAction, ExecutionRecord } from '../types'
 
 export interface BusinessActionInput {
   action_code?: string
@@ -30,6 +30,4 @@ export const actionApi = {
 
   executionRecord: (id: string) => api.get<ExecutionRecord>(endpoints.executionRecord(id)),
 
-  updateBinding: (tenantId: string, bindingId: string, status: string) =>
-    api.patch<BusinessActionBinding>(endpoints.actionBinding(tenantId, bindingId), { status }),
 }

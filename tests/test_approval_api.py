@@ -57,6 +57,9 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         # 运行接口不依赖租户能力，这里显式关闭租户开关覆盖全局模式。
         self.previous_tenancy_enabled = os.environ.get("TENANCY_ENABLED")
         os.environ["TENANCY_ENABLED"] = "false"
+        self.previous_admin_key = os.environ.get("APPROVAL_ADMIN_KEY")
+        os.environ["APPROVAL_ADMIN_KEY"] = "approval-api-test-key"
+        self.admin_headers = {"X-Admin-Key": "approval-api-test-key"}
 
         self.applicant_id = self.create_person("接口发起人")
         self.approver_a = self.create_person("接口审批人A")
@@ -81,6 +84,10 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             os.environ.pop("TENANCY_ENABLED", None)
         else:
             os.environ["TENANCY_ENABLED"] = self.previous_tenancy_enabled
+        if self.previous_admin_key is None:
+            os.environ.pop("APPROVAL_ADMIN_KEY", None)
+        else:
+            os.environ["APPROVAL_ADMIN_KEY"] = self.previous_admin_key
         self.close_session()
 
     # ------------------------------------------------------------------
@@ -187,11 +194,16 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         return response.json()["data"]
 
     def list_tasks(self, person_id: UUID, status: str = TASK_STATUS_PENDING) -> list[dict]:
-        """通过接口查询人员任务。"""
+        """通过统一工作台接口查询指定人员的审批任务。"""
 
         response = self.client.get(
-            "/api/approval-tasks",
-            params={"person_id": str(person_id), "status": status},
+            "/api/work-items",
+            params={
+                "person_id": str(person_id),
+                "task_type": "APPROVAL",
+                "status": status,
+            },
+            headers=self.admin_headers,
         )
         self.assertEqual(response.status_code, 200, response.text)
         return response.json()["data"]
@@ -200,8 +212,13 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         """通过接口同意或拒绝任务并返回原始响应。"""
 
         return self.client.post(
-            f"/api/approval-tasks/{task_id}/{action}",
-            json={"person_id": str(person_id), "comment": comment},
+            f"/api/approval-tasks/{task_id}/decisions",
+            json={
+                "person_id": str(person_id),
+                "action": action.upper(),
+                "comment": comment,
+            },
+            headers=self.admin_headers,
         )
 
     # ------------------------------------------------------------------
@@ -238,22 +255,33 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
             [NODE_TYPE_START, NODE_TYPE_APPROVAL],
         )
         self.assertEqual(len(detail["pending_tasks"]), 2)
+        task_id = self.list_tasks(self.approver_a)[0]["id"]
+        work_item_detail = self.client.get(
+            f"/api/work-items/{task_id}/instance",
+            params={"person_id": str(self.approver_a)},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(work_item_detail.status_code, 200, work_item_detail.text)
+        self.assertEqual(work_item_detail.json()["data"]["id"], started["instance_id"])
+        wrong_recipient = self.client.get(
+            f"/api/work-items/{task_id}/instance",
+            params={"person_id": str(self.applicant_id)},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(wrong_recipient.status_code, 403)
         self.assertIsNone(detail["finished_at"])
         self.assertIsNotNone(detail["duration_ms"])
         # 审批单数据用于展示，业务执行参数不通过详情接口返回。
         self.assertNotIn("execution_payload", detail)
 
-        timeline_response = self.client.get(
-            f"/api/approval-instances/{started['instance_id']}/timeline"
-        )
-        self.assertEqual(timeline_response.status_code, 200, timeline_response.text)
-        timeline = timeline_response.json()["data"]
-        self.assertEqual(len(timeline["entries"]), 2)
+        # 详情和时间线由同一个响应返回，避免同一页面重复读取审批实例。
+        timeline_entries = detail["timeline_entries"]
+        self.assertEqual(len(timeline_entries), 2)
 
-        start_entry = timeline["entries"][0]
+        start_entry = timeline_entries[0]
         self.assertEqual(start_entry["node_execution"]["node_type"], NODE_TYPE_START)
         self.assertEqual(len(start_entry["tasks"]), 0)
-        approval_entry = timeline["entries"][1]
+        approval_entry = timeline_entries[1]
         self.assertEqual(len(approval_entry["tasks"]), 2)
         self.assertEqual(
             approval_entry["tasks"][0]["node_name"],
@@ -365,7 +393,7 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         first_tasks = self.list_tasks(self.approver_a)
         self.assertEqual(len(first_tasks), 1)
         self.assertEqual(first_tasks[0]["instance_id"], instance_id)
-        self.assertEqual(first_tasks[0]["status"], TASK_STATUS_PENDING)
+        self.assertEqual(first_tasks[0]["task_status"], TASK_STATUS_PENDING)
 
         first_response = self.handle_task(
             first_tasks[0]["id"],
@@ -403,6 +431,17 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         handled_tasks = self.list_tasks(self.approver_a, status="APPROVED")
         self.assertEqual(len(handled_tasks), 1)
         self.assertEqual(handled_tasks[0]["id"], first_tasks[0]["id"])
+
+        # 已完成聚合筛选应包含审批终态，且人员条件仍由数据库先过滤。
+        completed_response = self.client.get(
+            "/api/work-items",
+            params={"person_id": str(self.approver_a), "status": "COMPLETED"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(completed_response.status_code, 200, completed_response.text)
+        completed_items = completed_response.json()["data"]
+        self.assertEqual([item["id"] for item in completed_items], [first_tasks[0]["id"]])
+        self.assertEqual(completed_items[0]["task_type"], "APPROVAL")
 
     def test_reject_ends_instance_and_cancels_other_task(self) -> None:
         """任意一人拒绝后实例立即拒绝，其余待办不再出现在待办列表。"""
@@ -472,10 +511,30 @@ class ApprovalApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         """不受支持的任务状态筛选值返回 422。"""
 
         response = self.client.get(
-            "/api/approval-tasks",
+            "/api/work-items",
             params={"person_id": str(self.approver_a), "status": "UNKNOWN"},
+            headers=self.admin_headers,
         )
         self.assertEqual(response.status_code, 422)
+
+    def test_invalid_task_decision_returns_422(self) -> None:
+        """统一处理接口拒绝未知 action，避免意外进入审批引擎。"""
+
+        response = self.client.post(
+            f"/api/approval-tasks/{uuid4()}/decisions",
+            json={"person_id": str(self.approver_a), "action": "SKIP"},
+            headers=self.admin_headers,
+        )
+        self.assertEqual(response.status_code, 422)
+
+    def test_task_decision_requires_admin_key(self) -> None:
+        """只提交人员 ID 不能绕过管理身份校验处理审批任务。"""
+
+        response = self.client.post(
+            f"/api/approval-tasks/{uuid4()}/decisions",
+            json={"person_id": str(self.approver_a), "action": "APPROVE"},
+        )
+        self.assertEqual(response.status_code, 401)
 
 
 if __name__ == "__main__":

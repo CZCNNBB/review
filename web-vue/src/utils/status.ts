@@ -10,6 +10,7 @@ export const STATUS_TEXT: Record<string, string> = {
   CANCELLED: '已取消',
   ERROR: '异常',
   PENDING: '待办',
+  RECEIVED: '已送达',
   ACTIVE: '进行中',
   COMPLETED: '已完成',
   SUCCEEDED: '成功',
@@ -19,10 +20,11 @@ export const STATUS_TEXT: Record<string, string> = {
 /** 状态标签的四种语气，对应 .tag--on / off / wait / work 四套配色。 */
 export type TagTone = 'on' | 'off' | 'wait' | 'work'
 
-const TAG_ON = ['ENABLED', 'APPROVED', 'PUBLISHED', 'SUCCEEDED', 'COMPLETED']
+const TAG_ON = ['ENABLED', 'APPROVED', 'PUBLISHED', 'SUCCEEDED', 'COMPLETED', 'RECEIVED']
 const TAG_OFF = ['DISABLED', 'REJECTED', 'FAILED', 'ERROR', 'CANCELLED']
 const TAG_WAIT = ['PENDING', 'DRAFT']
 
+/** 将后端状态码转换为统一中文标签。 */
 export function statusText(status?: string | null): string {
   if (!status) return '—'
   return STATUS_TEXT[status] || status
@@ -42,6 +44,7 @@ export function isActive(status?: string | null): boolean {
   return Boolean(status && ACTIVE_STATUSES.includes(status))
 }
 
+/** 根据状态选择标签配色。 */
 export function tagTone(status?: string | null): TagTone {
   if (status && TAG_ON.includes(status)) return 'on'
   if (status && TAG_OFF.includes(status)) return 'off'

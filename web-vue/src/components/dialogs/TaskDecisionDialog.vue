@@ -67,14 +67,15 @@ async function submit(): Promise<void> {
   }
   submitting.value = true
   error.value = ''
+  // 同意和拒绝只改变 action 字段，统一交给一个任务处理接口。
+  const action: 'APPROVE' | 'REJECT' = isApprove.value ? 'APPROVE' : 'REJECT'
   const body = {
     person_id: props.task.approver_person_id,
+    action,
     comment: String(values.value.comment || '').trim() || null,
   }
   try {
-    const result = isApprove.value
-      ? await approvalApi.approve(props.task.id, body)
-      : await approvalApi.reject(props.task.id, body)
+    const result = await approvalApi.decide(props.task.id, body)
     // 任务状态变了：租户密钥借用与使用记录缓存立刻失效（旧版 invalidateTenantCache）
     credentials.invalidate()
     open.value = false

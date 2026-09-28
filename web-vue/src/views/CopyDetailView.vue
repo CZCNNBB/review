@@ -45,7 +45,7 @@ const { data: page, loading, error, refresh } = useAsyncPage<CopyDetailPage>(
     if (!personId.value) throw new Error('缺少抄送收件人，请从抄送列表打开审批单')
 
     // 详情接口先校验这条抄送确实属于所选人员；辅助数据失败时仍显示审批单本身。
-    const detail = await approvalApi.copiedInstance(copyId.value, personId.value)
+    const detail = await approvalApi.workItemInstance(copyId.value, personId.value)
     const [graph, persons, actions] = await Promise.all([
       safe(processApi.graph(detail.process_version_id), null),
       safe(orgApi.persons(200), [] as Person[]),
@@ -61,24 +61,18 @@ const personNames = computed<Record<string, string>>(() =>
   Object.fromEntries(page.value.persons.map((person) => [person.id, person.name])),
 )
 
-/** 将后端审批记录按节点归组，交给审批详情共用的时间线组件渲染。 */
+/** 统一详情已按节点归好时间线；这里仅转换审批意见的展示字段。 */
 const timeline = computed<TimelineExecution[]>(() => {
   if (!detail.value) return []
-  const recordsByExecution = new Map<string, NonNullable<TimelineExecution['approval_records']>>()
-  for (const record of detail.value.records) {
-    const records = recordsByExecution.get(record.node_execution_id) || []
-    records.push({
+  return detail.value.timeline_entries.map((entry) => ({
+    ...entry.node_execution,
+    approval_records: entry.records.map((record) => ({
       approver_person_id: record.operator_person_id,
       approver_name: String(record.operator_snapshot?.name || ''),
       result: record.action,
       comment: record.comment,
       created_at: record.created_at,
-    })
-    recordsByExecution.set(record.node_execution_id, records)
-  }
-  return detail.value.node_executions.map((execution) => ({
-    ...execution,
-    approval_records: recordsByExecution.get(execution.id) || [],
+    })),
   }))
 })
 

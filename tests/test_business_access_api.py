@@ -574,7 +574,7 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         )
 
     def test_instance_detail_and_timeline_are_isolated_by_tenant(self) -> None:
-        """审批详情和时间线只能由实例所属租户查询。"""
+        """包含时间线的审批详情只能由实例所属租户查询。"""
 
         _, owner_api_key, process_id = self.prepare_tenant("实例所属租户")
         _, other_api_key = self.create_tenant("其他租户")
@@ -585,10 +585,7 @@ class BusinessAccessApiTestCase(DatabaseTestCaseMixin, unittest.TestCase):
         ).json()["data"]
         instance_id = started["instance_id"]
 
-        protected_paths = [
-            f"/api/approval-instances/{instance_id}",
-            f"/api/approval-instances/{instance_id}/timeline",
-        ]
+        protected_paths = [f"/api/approval-instances/{instance_id}"]
         for path in protected_paths:
             with self.subTest(path=path, access="missing_api_key"):
                 response = self.client.get(path)

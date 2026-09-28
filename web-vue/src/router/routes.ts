@@ -42,7 +42,8 @@ export const routes: RouteRecordRaw[] = [
   { path: '/workbench', name: 'workbench', component: () => import('@/views/TasksView.vue') },
   // 旧任务链接保留，原有 status/person 筛选参数继续生效。
   { path: '/tasks', redirect: (to) => ({ path: '/workbench', query: to.query }) },
-  { path: '/copies', name: 'copies', component: () => import('@/views/CopiesView.vue') },
+  // 旧抄送列表入口归到统一工作台；抄送详情继续使用独立的只读页面。
+  { path: '/copies', redirect: (to) => ({ path: '/workbench', query: { ...to.query, type: 'COPY' } }) },
   { path: '/copies/:id', name: 'copy-detail', component: () => import('@/views/CopyDetailView.vue') },
   {
     path: '/instances/:id',

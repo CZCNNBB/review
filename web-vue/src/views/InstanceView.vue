@@ -8,7 +8,16 @@ import { actionApi } from '@/api/modules/action'
 import { approvalApi } from '@/api/modules/approval'
 import { orgApi } from '@/api/modules/org'
 import { processApi } from '@/api/modules/process'
-import type { ApprovalTask, BusinessAction, ExecutionRecord, Person, Tenant } from '@/api/types'
+import type {
+  ApprovalInstanceDetail,
+  ApprovalRecord,
+  ApprovalTask,
+  ApprovalTimelineEntry,
+  BusinessAction,
+  ExecutionRecord,
+  Person,
+  Tenant,
+} from '@/api/types'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution, TimelineRecord } from '@/components/common/ApprovalTimeline.vue'
 import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
@@ -30,10 +39,7 @@ import { formatDuration, formatTime, shortId } from '@/utils/format'
 import { toastError, toastOk } from '@/utils/notify'
 import type { JSONSchema } from '@/types/domain'
 
-/** 待办里还有 duration_ms（「已等待」列要用），共享类型没写，本地补上。 */
-type TaskRow = ApprovalTask & { duration_ms?: number | null }
-
-/** 页面用的审批详情：只留展示需要的字段，接口的几种形状在下面归一成这一份。 */
+/** 页面用的审批详情，只保留展示所需的字段。 */
 interface InstanceDetail {
   id: string
   title: string
@@ -49,102 +55,46 @@ interface InstanceDetail {
   duration_ms: number | null
   current_node_name: string | null
   approval_form: Record<string, unknown>
-  pending_tasks: TaskRow[]
+  pending_tasks: ApprovalTask[]
 }
 
-/**
- * 详情接口的线上形状。
- *
- * 后端返回的是平铺字段（与旧版 web/app.js 一致），而 api/types.ts 声明的是
- * { instance, pending_tasks, … } 的嵌套形状 —— 两套都可能出现，所以这里按平铺读、
- * 嵌套兜底。契约与实现错位时，页面不该整页空白。
- */
-interface InstanceWire {
-  id?: string
-  title?: string
-  business_key?: string
-  process_name?: string
-  process_version_no?: number | null
-  status?: string
-  applicant_person_id?: string | null
-  applicant_snapshot?: { name?: string | null } | null
-  action_code?: string | null
-  started_at?: string
-  finished_at?: string | null
-  duration_ms?: number | null
-  current_node?: { node_name?: string | null } | null
-  current_node_name?: string | null
-  approval_form?: Record<string, unknown>
-  pending_tasks?: TaskRow[]
-  /** 嵌套形状：上面这些字段挂在这一层下面 */
-  instance?: InstanceWire
-}
-
-/** 时间线响应里的审批记录。后端是 operator_* / action，共享类型是 approver_* / result。 */
-interface TimelineRecordWire extends TimelineRecord {
-  operator_person_id?: string | null
-  operator_snapshot?: { name?: string | null } | null
-  action?: string | null
-}
-
-function normalizeRecord(record: TimelineRecordWire): TimelineRecord {
+/** 把后端审批记录转换为时间线组件的展示字段。 */
+function normalizeRecord(record: ApprovalRecord): TimelineRecord {
   return {
-    approver_person_id: record.operator_person_id || record.approver_person_id || null,
-    approver_name: record.operator_snapshot?.name || record.approver_name || null,
-    result: record.action || record.result || null,
-    comment: record.comment || null,
-    created_at: record.created_at || null,
+    approver_person_id: record.operator_person_id,
+    approver_name: String(record.operator_snapshot?.name || ''),
+    result: record.action,
+    comment: record.comment,
+    created_at: record.created_at,
   }
 }
 
-/**
- * 时间线响应也有两套：后端返回 { entries: [{ node_execution, records }] }（与旧版
- * app.js 一致），共享类型声明的是 { node_executions: [...] }，这里连裸数组一起认，
- * 归一成节点执行数组，并把该节点的审批意见挂到 approval_records 上。
- */
-function normalizeExecutions(raw: unknown): TimelineExecution[] {
-  if (Array.isArray(raw)) return raw as TimelineExecution[]
-
-  const wire = (raw || {}) as {
-    node_executions?: TimelineExecution[]
-    entries?: Array<{ node_execution?: TimelineExecution; records?: TimelineRecordWire[] }>
-  }
-
-  if (Array.isArray(wire.entries)) {
-    return wire.entries.flatMap((entry) =>
-      entry.node_execution
-        ? [
-            {
-              ...entry.node_execution,
-              approval_records: (entry.records || []).map(normalizeRecord),
-            },
-          ]
-        : [],
-    )
-  }
-  return Array.isArray(wire.node_executions) ? wire.node_executions : []
+/** 使用详情接口中已按节点归组的时间线，避免页面再次关联任务与意见。 */
+function normalizeExecutions(entries: ApprovalTimelineEntry[]): TimelineExecution[] {
+  return entries.map((entry) => ({
+    ...entry.node_execution,
+    approval_records: entry.records.map(normalizeRecord),
+  }))
 }
 
-function normalizeInstance(raw: unknown, fallbackId: string): InstanceDetail {
-  const wire = (raw || {}) as InstanceWire
-  // 字段冲突时平铺优先：后端返回的就是平铺字段
-  const source: InstanceWire = { ...(wire.instance || {}), ...wire }
+/** 将统一详情响应投影为页面所需的概要字段。 */
+function normalizeInstance(source: ApprovalInstanceDetail): InstanceDetail {
   return {
-    id: source.id || fallbackId,
-    title: source.title || '（无标题）',
-    business_key: source.business_key || '—',
-    process_name: source.process_name || '—',
-    process_version_no: source.process_version_no ?? null,
-    status: source.status || '',
-    applicant_person_id: source.applicant_person_id ?? null,
-    applicant_name: source.applicant_snapshot?.name || '',
-    action_code: source.action_code ?? null,
-    started_at: source.started_at || '',
-    finished_at: source.finished_at ?? null,
-    duration_ms: typeof source.duration_ms === 'number' ? source.duration_ms : null,
-    current_node_name: source.current_node?.node_name || source.current_node_name || null,
-    approval_form: source.approval_form || {},
-    pending_tasks: source.pending_tasks || [],
+    id: source.id,
+    title: source.title,
+    business_key: source.business_key,
+    process_name: source.process_name,
+    process_version_no: source.process_version_no,
+    status: source.status,
+    applicant_person_id: source.applicant_person_id,
+    applicant_name: String(source.applicant_snapshot?.name || ''),
+    action_code: source.action_code,
+    started_at: source.started_at,
+    finished_at: source.finished_at,
+    duration_ms: source.duration_ms,
+    current_node_name: source.current_node?.node_name || null,
+    approval_form: source.approval_form,
+    pending_tasks: source.pending_tasks,
   }
 }
 
@@ -201,9 +151,8 @@ const {
     return { ...EMPTY_PAGE, tenant: borrowed.tenant }
   }
 
-  const [rawDetail, rawTimeline, executions, persons] = await Promise.all([
+  const [rawDetail, executions, persons] = await Promise.all([
     approvalApi.instance(instanceId.value, apiKey),
-    approvalApi.timeline(instanceId.value, apiKey),
     safe(actionApi.executionRecords({ instanceId: instanceId.value }), [] as ExecutionRecord[]),
     // 人员名单只用来把人员 id 显示成姓名：单独失败不该把整页变成错误面板
     safe(orgApi.persons(200), [] as Person[]),
@@ -219,8 +168,8 @@ const {
 
   return {
     tenant: borrowed.tenant,
-    detail: normalizeInstance(rawDetail, instanceId.value),
-    executions: normalizeExecutions(rawTimeline),
+    detail: normalizeInstance(rawDetail),
+    executions: normalizeExecutions(rawDetail.timeline_entries),
     execution: executions[0] || null,
     persons,
     formSchema: graph?.form_schema || null,
@@ -308,11 +257,11 @@ async function afterDecided(): Promise<void> {
 
 const decisionOpen = ref(false)
 const decisionKind = ref<'approve' | 'reject'>('approve')
-const decisionTask = ref<TaskRow | null>(null)
+const decisionTask = ref<ApprovalTask | null>(null)
 
 const decisionApproverName = computed(() => personNameOf(decisionTask.value?.approver_person_id))
 
-function openDecision(task: TaskRow, kind: 'approve' | 'reject'): void {
+function openDecision(task: ApprovalTask, kind: 'approve' | 'reject'): void {
   decisionKind.value = kind
   decisionTask.value = task
   decisionOpen.value = true

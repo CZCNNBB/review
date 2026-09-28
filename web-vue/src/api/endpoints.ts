@@ -65,18 +65,15 @@ export const endpoints = {
   // 运行侧（租户密钥）
   tenantContext: '/api/tenant/context',
   startInstance: (processId: string) => `/api/processes/${processId}/instances`,
-  approvalTasks: (personId: string, status?: string) =>
-    `/api/approval-tasks?person_id=${encodeURIComponent(personId)}` +
-    (status ? `&status=${encodeURIComponent(status)}` : '') +
-    '&limit=200',
-  approvalCopies: (personId?: string) =>
-    '/api/approval-copies?limit=200' +
-    (personId ? `&person_id=${encodeURIComponent(personId)}` : ''),
-  workItems: (offset = 0) => `/api/work-items?offset=${offset}&limit=500`,
-  approvalCopyInstance: (copyId: string, personId: string) =>
-    `/api/approval-copies/${copyId}/instance?person_id=${encodeURIComponent(personId)}`,
-  approveTask: (taskId: string) => `/api/approval-tasks/${taskId}/approve`,
-  rejectTask: (taskId: string) => `/api/approval-tasks/${taskId}/reject`,
+  workItems: (params: { personId?: string; taskType?: string; status?: string; offset: number }) => {
+    const query = new URLSearchParams({ offset: String(params.offset), limit: '500' })
+    if (params.personId) query.set('person_id', params.personId)
+    if (params.taskType) query.set('task_type', params.taskType)
+    if (params.status) query.set('status', params.status)
+    return `/api/work-items?${query.toString()}`
+  },
+  workItemInstance: (taskId: string, personId: string) =>
+    `/api/work-items/${taskId}/instance?person_id=${encodeURIComponent(personId)}`,
+  decideTask: (taskId: string) => `/api/approval-tasks/${taskId}/decisions`,
   approvalInstance: (id: string) => `/api/approval-instances/${id}`,
-  instanceTimeline: (id: string) => `/api/approval-instances/${id}/timeline`,
 } as const

@@ -248,17 +248,25 @@ class ApprovalRepository:
     def list_work_items(
         self,
         db: Session,
+        person_id: UUID | None = None,
+        task_type: str | None = None,
+        statuses: list[str] | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> list[ApprovalTask]:
-        """统一读取审批和抄送任务，供管理台工作台按收件时间展示。"""
+        """在统一任务表上按人员、类型和状态筛选，再按收件时间分页。"""
 
-        statement = (
-            select(ApprovalTask)
-            .order_by(ApprovalTask.created_at.desc(), ApprovalTask.id.desc())
-            .offset(offset)
-            .limit(limit)
+        statement = select(ApprovalTask)
+        if person_id is not None:
+            statement = statement.where(ApprovalTask.recipient_person_id == person_id)
+        if task_type is not None:
+            statement = statement.where(ApprovalTask.task_type == task_type)
+        if statuses:
+            statement = statement.where(ApprovalTask.status.in_(statuses))
+        statement = statement.order_by(
+            ApprovalTask.created_at.desc(), ApprovalTask.id.desc()
         )
+        statement = statement.offset(offset).limit(limit)
         return list(db.exec(statement).all())
 
     def cancel_task(self, task: ApprovalTask, now: datetime, db: Session) -> bool:
@@ -319,46 +327,6 @@ class ApprovalRepository:
 
         for copy in copies:
             db.add(copy)
-
-    def list_person_copies(
-        self,
-        person_id: UUID | None,
-        db: Session,
-        offset: int = 0,
-        limit: int = 100,
-    ) -> list[ApprovalTask]:
-        """按抄送时间倒序查询记录；未指定人员时展示管理台全部记录。"""
-
-        statement = select(ApprovalTask).where(ApprovalTask.task_type == TASK_TYPE_COPY)
-        if person_id is not None:
-            statement = statement.where(ApprovalTask.recipient_person_id == person_id)
-        statement = (
-            statement.order_by(ApprovalTask.created_at.desc(), ApprovalTask.id.desc())
-            .offset(offset)
-            .limit(limit)
-        )
-        return list(db.exec(statement).all())
-
-    def get_copy_by_id(self, copy_id: UUID, db: Session) -> ApprovalTask | None:
-        """按主键读取抄送类型的统一任务，防止审批任务被当成抄送打开。"""
-
-        task = db.get(ApprovalTask, copy_id)
-        if task is None or task.task_type != TASK_TYPE_COPY:
-            return None
-        return task
-
-    def list_copies_by_instance(self, instance_id: UUID, db: Session) -> list[ApprovalTask]:
-        """查询审批实例的全部抄送记录，供详情和时间线展示。"""
-
-        statement = (
-            select(ApprovalTask)
-            .where(
-                ApprovalTask.instance_id == instance_id,
-                ApprovalTask.task_type == TASK_TYPE_COPY,
-            )
-            .order_by(ApprovalTask.created_at.asc(), ApprovalTask.id.asc())
-        )
-        return list(db.exec(statement).all())
 
     # ------------------------------------------------------------------
     # 审批记录

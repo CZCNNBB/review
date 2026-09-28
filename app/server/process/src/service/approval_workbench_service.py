@@ -1,6 +1,7 @@
 """管理台统一工作台的审批与抄送任务查询。"""
 
 from dataclasses import dataclass
+from uuid import UUID
 
 from sqlmodel import Session
 
@@ -10,6 +11,14 @@ from app.server.process.src.models.approval_model import (
     ApprovalTask,
 )
 from app.server.process.src.repository.approval_repository import ApprovalRepository
+from app.server.process.src.service.approval_instance_service import (
+    ApprovalInstanceService,
+    InstanceDetailView,
+)
+from app.server.process.src.service.exceptions import (
+    ApprovalNotFoundError,
+    ApprovalPermissionError,
+)
 
 
 @dataclass(frozen=True)
@@ -24,20 +33,52 @@ class WorkItem:
 class ApprovalWorkbenchService:
     """批量装配工作台需要的审批和抄送任务。"""
 
-    def __init__(self, repository: ApprovalRepository | None = None):
-        """初始化仓储，并允许单元测试注入替身。"""
+    def __init__(
+        self,
+        repository: ApprovalRepository | None = None,
+        instance_service: ApprovalInstanceService | None = None,
+    ):
+        """初始化任务仓储和实例服务，并允许测试注入依赖。"""
 
         self.repository = repository or ApprovalRepository()
+        self.instance_service = instance_service or ApprovalInstanceService(
+            repository=self.repository
+        )
+
+    def get_recipient_instance_view(
+        self,
+        task_id: UUID,
+        person_id: UUID,
+        db: Session,
+    ) -> InstanceDetailView:
+        """校验任务接收人后，读取审批或抄送任务对应的审批单。"""
+
+        task = self.repository.get_task_by_id(task_id, db)
+        if task is None:
+            raise ApprovalNotFoundError("任务不存在")
+        if task.recipient_person_id != person_id:
+            raise ApprovalPermissionError("任务不属于当前人员")
+        return self.instance_service.get_instance_view(task.instance_id, db)
 
     def list_items(
         self,
         db: Session,
+        person_id: UUID | None = None,
+        task_type: str | None = None,
+        statuses: list[str] | None = None,
         offset: int = 0,
         limit: int = 500,
     ) -> list[WorkItem]:
-        """分页查询统一任务表，并批量读取实例和节点避免逐条访问数据库。"""
+        """按人员、类型和状态查询，再批量装配实例与节点展示信息。"""
 
-        tasks = self.repository.list_work_items(db, offset, limit)
+        tasks = self.repository.list_work_items(
+            db,
+            person_id=person_id,
+            task_type=task_type,
+            statuses=statuses,
+            offset=offset,
+            limit=limit,
+        )
         if not tasks:
             return []
 

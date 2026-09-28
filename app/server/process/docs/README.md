@@ -205,13 +205,19 @@ Schema 声明的 format 解析后比较，`date-time` 统一换算到 UTC，缺�
 ~~~text
 POST /api/processes/{process_id}/instances              发起审批
 GET  /api/approval-instances/{instance_id}              查询审批详情
-GET  /api/approval-instances/{instance_id}/timeline     查询运行时间线
-GET  /api/approval-tasks?person_id=&status=             查询人员待办或已办
-POST /api/approval-tasks/{task_id}/approve              同意任务
-POST /api/approval-tasks/{task_id}/reject               拒绝任务
+GET  /api/work-items?person_id=&task_type=&status=       查询审批与抄送任务
+GET  /api/work-items/{task_id}/instance?person_id=      查看任务关联的审批单
+POST /api/approval-tasks/{task_id}/decisions            处理任务，body.action=APPROVE/REJECT
 ~~~
 
-审批详情返回当前节点、节点耗时、待办人员和审批记录；时间线按实际执行顺序返回经过
+`person_id` 是接收人的人员 UUID；`task_type` 可选 `APPROVAL`、`COPY`；
+`status` 可选 `PENDING`、`APPROVED`、`REJECTED`、`CANCELLED`、`RECEIVED`、
+`COMPLETED`。其中 `COMPLETED` 包含所有审批终态及已送达抄送。列表支持
+`offset`、`limit` 分页，调用时需要管理密钥 `X-Admin-Key`。
+任务处理与任务关联审批单详情也需要 `X-Admin-Key`；请求体中的 `person_id`
+用于核对任务归属，不能单独证明调用者身份。
+
+审批详情返回当前节点、节点耗时、待办人员、审批记录和 `timeline_entries`；时间线按实际执行顺序返回经过
 的节点，并在每个节点下挂上该节点产生的任务和审批记录。耗时统一由查询接口按时间
 字段计算，运行表不保存冗余的耗时字段：节点取 `completed_at - entered_at`，任务取
 处理时刻减任务产生时间，被取消的任务取 `cancelled_at`，避免已结束的耗时继续增长。

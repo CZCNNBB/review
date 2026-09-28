@@ -241,19 +241,6 @@ export interface ApprovalTask {
   duration_ms: number | null
 }
 
-/** 抄送节点产生的只读收件记录。 */
-export interface ApprovalCopy {
-  id: string
-  instance_id: string
-  instance_title: string
-  business_key: string
-  instance_status: string
-  node_name: string
-  recipient_person_id: string
-  recipient_snapshot: Record<string, unknown>
-  created_at: string
-}
-
 /** 统一任务表中的一条工作台记录；抄送任务使用只读的 COPY 类型。 */
 export interface ApprovalWorkItem {
   id: string
@@ -289,16 +276,6 @@ export interface ApprovalTimelineEntry {
   records: ApprovalRecord[]
 }
 
-export interface ApprovalTimeline {
-  instance_id: string
-  title: string
-  status: string
-  started_at: string
-  finished_at: string | null
-  duration_ms: number | null
-  entries: ApprovalTimelineEntry[]
-}
-
 export interface ApprovalInstanceDetail {
   id: string
   process_id: string
@@ -316,6 +293,7 @@ export interface ApprovalInstanceDetail {
   node_executions: ApprovalNodeExecution[]
   tasks: ApprovalTask[]
   records: ApprovalRecord[]
+  timeline_entries: ApprovalTimelineEntry[]
   pending_tasks: ApprovalTask[]
   started_at: string
   finished_at: string | null
