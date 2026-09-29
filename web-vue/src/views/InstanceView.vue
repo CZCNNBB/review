@@ -18,13 +18,14 @@ import type {
   Person,
   Tenant,
 } from '@/api/types'
+import ApprovalDetailHero from '@/components/common/ApprovalDetailHero.vue'
+import ApprovalDetailSections from '@/components/common/ApprovalDetailSections.vue'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution, TimelineRecord } from '@/components/common/ApprovalTimeline.vue'
 import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
 import DataTable from '@/components/common/DataTable.vue'
 import type { ColumnSpec } from '@/components/common/DataTable.vue'
-import StatusStamp from '@/components/common/StatusStamp.vue'
 import StatusTag from '@/components/common/StatusTag.vue'
 import TaskDecisionDialog from '@/components/dialogs/TaskDecisionDialog.vue'
 import Breadcrumb from '@/components/layout/Breadcrumb.vue'
@@ -185,6 +186,7 @@ const personNames = computed<Record<string, string>>(() =>
   Object.fromEntries(page.value.persons.map((person) => [person.id, person.name])),
 )
 
+/** 人员目录有姓名时优先展示姓名，否则退回短 ID。 */
 function personNameOf(personId?: string | null): string {
   const person = page.value.persons.find((item) => item.id === personId)
   return person ? person.name : shortId(personId)
@@ -204,11 +206,6 @@ const elapsedMs = computed(() => {
 const detailPairs = computed(() => [
   { key: '审批实例', slot: 'instanceId' },
   { key: '所属租户', slot: 'tenant' },
-  {
-    key: '发起人',
-    value: detail.value?.applicant_name || personNameOf(detail.value?.applicant_person_id),
-  },
-  { key: '发起时间', value: formatTime(detail.value?.started_at) },
   { key: '结束时间', value: formatTime(detail.value?.finished_at) },
   { key: '业务动作', slot: 'actionCode' },
 ])
@@ -246,6 +243,7 @@ async function useManualKey(): Promise<void> {
   await refresh()
 }
 
+/** 处理任务成功后刷新审批单，让状态和待办即时更新。 */
 async function afterDecided(): Promise<void> {
   toastOk('处理完成')
   await refresh()
@@ -261,6 +259,7 @@ const decisionTask = ref<ApprovalTask | null>(null)
 
 const decisionApproverName = computed(() => personNameOf(decisionTask.value?.approver_person_id))
 
+/** 为选中的审批任务打开同意或拒绝弹窗。 */
 function openDecision(task: ApprovalTask, kind: 'approve' | 'reject'): void {
   decisionKind.value = kind
   decisionTask.value = task
@@ -275,56 +274,40 @@ onMounted(refresh)
 
 <template>
   <Breadcrumb
-    :items="[{ text: '工作台', hash: '#/workbench?type=APPROVAL' }, { text: detail?.title || shortId(instanceId) }]"
+    :items="[
+      { text: '工作台', hash: '#/workbench?type=APPROVAL' },
+      { text: detail?.title || shortId(instanceId) },
+    ]"
   />
 
   <ErrorPanel v-if="error" :error="error" />
 
   <template v-else-if="detail">
-    <PageHead
+    <ApprovalDetailHero
+      kind="APPROVAL"
       :title="detail.title"
-      :note="`业务单号 ${detail.business_key} · ${detail.process_name} V${detail.process_version_no ?? '—'}`"
+      :status="detail.status"
+      :business-key="detail.business_key"
+      :process-label="`${detail.process_name} V${detail.process_version_no ?? '—'}`"
+      :current-node-name="detail.current_node_name"
+      :applicant-name="detail.applicant_name || personNameOf(detail.applicant_person_id)"
+      :started-at="formatTime(detail.started_at)"
+      :duration="formatDuration(elapsedMs)"
+      :pending-count="detail.pending_tasks.length"
+    />
+
+    <section
+      v-if="detail.pending_tasks.length"
+      class="decision-panel"
+      aria-labelledby="pending-heading"
     >
-      <StatusStamp :status="detail.status" />
-    </PageHead>
-
-    <PanelCard title="审批单">
-      <template #actions>
-        <span class="panel__note">
-          {{ detail.current_node_name ? `当前停在「${detail.current_node_name}」` : '流程已结束' }}
-          · 已用时 {{ formatDuration(elapsedMs) }}
-        </span>
-      </template>
-
-      <KvDescriptions :pairs="detailPairs">
-        <template #instanceId>
-          <span class="code">{{ detail.id }}</span>
-          <CopyButton :text="detail.id" />
-        </template>
-        <template #tenant>
-          <span v-if="tenant">{{ tenant.name }}（{{ tenant.code }}）</span>
-          <span v-else class="muted">全局模式，无租户归属</span>
-        </template>
-        <template #actionCode>
-          <template v-if="detail.action_code">
-            <span>{{ actionName }}</span>
-            <span class="code action-code">{{ detail.action_code }}</span>
-          </template>
-          <span v-else class="muted">不触发业务执行</span>
-        </template>
-      </KvDescriptions>
-    </PanelCard>
-
-    <PanelCard v-if="Object.keys(detail.approval_form).length" title="审批表单">
-      <ApprovalFormDetails :form="detail.approval_form" :schema="page.formSchema" />
-    </PanelCard>
-
-    <PanelCard v-if="detail.pending_tasks.length" title="等待处理的待办">
-      <template #actions>
-        <span class="panel__note">
-          管理台代为处理时使用任务所属审批人的身份，仅用于联调和验收
-        </span>
-      </template>
+      <div class="decision-panel__heading">
+        <div>
+          <span class="decision-panel__eyebrow">需要处理</span>
+          <h2 id="pending-heading">{{ detail.pending_tasks.length }} 条审批待办</h2>
+        </div>
+        <p>管理台代为处理时使用任务所属审批人的身份，仅用于联调和验收。</p>
+      </div>
 
       <DataTable
         :columns="pendingColumns"
@@ -343,11 +326,15 @@ onMounted(refresh)
           <span class="muted">{{ formatDuration(row.duration_ms) }}</span>
         </template>
         <template #cell-actions="{ row }">
-          <button class="btn--link btn--sm" type="button" @click="openDecision(row, 'approve')">
+          <button
+            class="btn btn--primary btn--sm"
+            type="button"
+            @click="openDecision(row, 'approve')"
+          >
             同意
           </button>
           <button
-            class="btn--link btn--sm is-danger"
+            class="btn btn--danger btn--sm decision-panel__reject"
             type="button"
             @click="openDecision(row, 'reject')"
           >
@@ -355,40 +342,70 @@ onMounted(refresh)
           </button>
         </template>
       </DataTable>
-    </PanelCard>
+    </section>
 
-    <PanelCard title="会签时间线">
-      <ApprovalTimeline :executions="page.executions" :persons="personNames" />
-    </PanelCard>
-
-    <PanelCard v-if="detail.action_code" title="业务执行">
-      <template #actions>
-        <a v-if="execution" class="btn btn--sm" :href="`#/executions/${execution.id}`">
-          查看完整记录
-        </a>
+    <ApprovalDetailSections>
+      <template #form>
+        <ApprovalFormDetails :form="detail.approval_form" :schema="page.formSchema" />
       </template>
 
-      <KvDescriptions v-if="execution" :pairs="executionPairs">
-        <template #execStatus>
-          <StatusTag :status="execution.status" />
-        </template>
-        <template #execCall>
-          <span>{{ actionName }}</span>
-          <span class="code action-code">{{ execution.http_method }} {{ execution.relative_path }}</span>
-        </template>
-        <template #execHttpStatus>
-          <span class="code">{{ execution.http_status_code ?? '—' }}</span>
-        </template>
-        <template #execError>
-          <span v-if="execution.error_message" class="exec-error">{{
-            execution.error_message
-          }}</span>
-          <span v-else>—</span>
-        </template>
-      </KvDescriptions>
+      <template #timeline>
+        <ApprovalTimeline :executions="page.executions" :persons="personNames" />
+      </template>
 
-      <div v-else class="note">审批还未通过，或通过后尚未创建执行记录。</div>
-    </PanelCard>
+      <template v-if="detail.action_code" #extra>
+        <PanelCard title="业务执行">
+          <template #actions>
+            <a v-if="execution" class="btn btn--sm" :href="`#/executions/${execution.id}`">
+              查看完整记录
+            </a>
+          </template>
+
+          <KvDescriptions v-if="execution" :pairs="executionPairs">
+            <template #execStatus>
+              <StatusTag :status="execution.status" />
+            </template>
+            <template #execCall>
+              <span>{{ actionName }}</span>
+              <span class="code action-code"
+                >{{ execution.http_method }} {{ execution.relative_path }}</span
+              >
+            </template>
+            <template #execHttpStatus>
+              <span class="code">{{ execution.http_status_code ?? '—' }}</span>
+            </template>
+            <template #execError>
+              <span v-if="execution.error_message" class="exec-error">{{
+                execution.error_message
+              }}</span>
+              <span v-else>—</span>
+            </template>
+          </KvDescriptions>
+
+          <div v-else class="note">审批还未通过，或通过后尚未创建执行记录。</div>
+        </PanelCard>
+      </template>
+
+      <template #metadata>
+        <KvDescriptions :pairs="detailPairs">
+          <template #instanceId>
+            <span class="code">{{ detail.id }}</span>
+            <CopyButton :text="detail.id" />
+          </template>
+          <template #tenant>
+            <span v-if="tenant">{{ tenant.name }}（{{ tenant.code }}）</span>
+            <span v-else class="muted">全局模式，无租户归属</span>
+          </template>
+          <template #actionCode>
+            <template v-if="detail.action_code">
+              <span>{{ actionName }}</span>
+              <span class="code action-code">{{ detail.action_code }}</span>
+            </template>
+            <span v-else class="muted">不触发业务执行</span>
+          </template>
+        </KvDescriptions>
+      </template>
+    </ApprovalDetailSections>
   </template>
 
   <div v-else-if="loading" class="loading">正在读取数据…</div>
@@ -422,6 +439,39 @@ onMounted(refresh)
 </template>
 
 <style scoped>
+/* 待办操作紧随概览区出现，让需要处理的事项先于表单与历史记录被看到。 */
+.decision-panel {
+  margin-bottom: var(--sp-5);
+  border: 1px solid var(--indigo-line);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  overflow: hidden;
+}
+.decision-panel__heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+  padding: var(--sp-4);
+  background: var(--indigo-wash);
+}
+.decision-panel__eyebrow {
+  color: var(--indigo);
+  font-size: var(--fs-xs);
+  font-weight: 700;
+}
+.decision-panel__heading h2 {
+  margin-top: var(--sp-1);
+  font-size: var(--fs-lg);
+}
+.decision-panel__heading p {
+  color: var(--ink-2);
+  font-size: var(--fs-sm);
+}
+.decision-panel__reject {
+  margin-left: var(--sp-2);
+}
 /* 旧版的 .muted / .cell-title 只写在 .tbl 作用域里，AntD 的表格里匹配不到，这里补一条 */
 .muted {
   color: var(--ink-3);

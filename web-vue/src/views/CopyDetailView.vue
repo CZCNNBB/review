@@ -8,15 +8,15 @@ import { approvalApi } from '@/api/modules/approval'
 import { orgApi } from '@/api/modules/org'
 import { processApi } from '@/api/modules/process'
 import type { ApprovalInstanceDetail, BusinessAction, Person } from '@/api/types'
+import ApprovalDetailHero from '@/components/common/ApprovalDetailHero.vue'
+import ApprovalDetailSections from '@/components/common/ApprovalDetailSections.vue'
 import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution } from '@/components/common/ApprovalTimeline.vue'
 import CopyButton from '@/components/common/CopyButton.vue'
-import StatusStamp from '@/components/common/StatusStamp.vue'
 import Breadcrumb from '@/components/layout/Breadcrumb.vue'
 import ErrorPanel from '@/components/layout/ErrorPanel.vue'
 import KvDescriptions from '@/components/layout/KvDescriptions.vue'
-import PageHead from '@/components/layout/PageHead.vue'
 import PanelCard from '@/components/layout/PanelCard.vue'
 import { useAsyncPage } from '@/composables/useAsyncPage'
 import type { JSONSchema } from '@/types/domain'
@@ -40,21 +40,23 @@ const route = useRoute()
 const copyId = computed(() => String(route.params.id || ''))
 const personId = computed(() => String(route.query.person || ''))
 
-const { data: page, loading, error, refresh } = useAsyncPage<CopyDetailPage>(
-  async () => {
-    if (!personId.value) throw new Error('缺少抄送收件人，请从抄送列表打开审批单')
+const {
+  data: page,
+  loading,
+  error,
+  refresh,
+} = useAsyncPage<CopyDetailPage>(async () => {
+  if (!personId.value) throw new Error('缺少抄送收件人，请从抄送列表打开审批单')
 
-    // 详情接口先校验这条抄送确实属于所选人员；辅助数据失败时仍显示审批单本身。
-    const detail = await approvalApi.workItemInstance(copyId.value, personId.value)
-    const [graph, persons, actions] = await Promise.all([
-      safe(processApi.graph(detail.process_version_id), null),
-      safe(orgApi.persons(200), [] as Person[]),
-      safe(actionApi.list(200), [] as BusinessAction[]),
-    ])
-    return { detail, formSchema: graph?.form_schema || null, persons, actions }
-  },
-  EMPTY_PAGE,
-)
+  // 详情接口先校验这条抄送确实属于所选人员；辅助数据失败时仍显示审批单本身。
+  const detail = await approvalApi.workItemInstance(copyId.value, personId.value)
+  const [graph, persons, actions] = await Promise.all([
+    safe(processApi.graph(detail.process_version_id), null),
+    safe(orgApi.persons(200), [] as Person[]),
+    safe(actionApi.list(200), [] as BusinessAction[]),
+  ])
+  return { detail, formSchema: graph?.form_schema || null, persons, actions }
+}, EMPTY_PAGE)
 
 const detail = computed(() => page.value.detail)
 const personNames = computed<Record<string, string>>(() =>
@@ -82,8 +84,13 @@ const applicantName = computed(() => {
   if (!current) return '—'
   const snapshotName = current.applicant_snapshot?.name
   if (snapshotName) return String(snapshotName)
-  return personNames.value[current.applicant_person_id || ''] || shortId(current.applicant_person_id)
+  return (
+    personNames.value[current.applicant_person_id || ''] || shortId(current.applicant_person_id)
+  )
 })
+
+/** 优先显示人员目录中的抄送收件人姓名，目录不可用时保留可识别的 ID。 */
+const recipientName = computed(() => personNames.value[personId.value] || shortId(personId.value))
 
 /** 业务动作显示中文名称；旧动作已删除时保留动作编码。 */
 const actionName = computed(() => {
@@ -104,8 +111,6 @@ const elapsedMs = computed(() => {
 
 const detailPairs = computed(() => [
   { key: '审批实例', slot: 'instanceId' },
-  { key: '发起人', value: applicantName.value },
-  { key: '发起时间', value: formatTime(detail.value?.started_at) },
   { key: '结束时间', value: formatTime(detail.value?.finished_at) },
   { key: '业务动作', slot: 'actionCode' },
 ])
@@ -116,47 +121,52 @@ onMounted(refresh)
 
 <template>
   <Breadcrumb
-    :items="[{ text: '工作台', hash: `#/workbench?type=COPY&person=${personId}` }, { text: detail?.title || '审批单' }]"
+    :items="[
+      { text: '工作台', hash: `#/workbench?type=COPY&person=${personId}` },
+      { text: detail?.title || '审批单' },
+    ]"
   />
   <ErrorPanel v-if="error" :error="error" />
 
   <template v-else-if="detail">
-    <PageHead
+    <ApprovalDetailHero
+      kind="COPY"
       :title="detail.title"
-      :note="`业务单号 ${detail.business_key} · ${detail.process_name} V${detail.process_version_no}`"
-    >
-      <StatusStamp :status="detail.status" />
-    </PageHead>
+      :status="detail.status"
+      :business-key="detail.business_key"
+      :process-label="`${detail.process_name} V${detail.process_version_no}`"
+      :current-node-name="detail.current_node?.node_name || null"
+      :applicant-name="applicantName"
+      :recipient-name="recipientName"
+      :started-at="formatTime(detail.started_at)"
+      :duration="formatDuration(elapsedMs)"
+    />
 
-    <PanelCard title="审批单">
-      <template #actions>
-        <span class="panel__note">
-          {{ detail.current_node ? `当前停在「${detail.current_node.node_name}」` : '流程已结束' }}
-          · 已用时 {{ formatDuration(elapsedMs) }}
-        </span>
+    <ApprovalDetailSections>
+      <template #form>
+        <ApprovalFormDetails :form="detail.approval_form" :schema="page.formSchema" />
       </template>
-      <KvDescriptions :pairs="detailPairs">
-        <template #instanceId>
-          <span class="code">{{ detail.id }}</span>
-          <CopyButton :text="detail.id" />
-        </template>
-        <template #actionCode>
-          <template v-if="detail.action_code">
-            <span>{{ actionName }}</span>
-            <span class="code action-code">{{ detail.action_code }}</span>
+
+      <template #timeline>
+        <ApprovalTimeline :executions="timeline" :persons="personNames" />
+      </template>
+
+      <template #metadata>
+        <KvDescriptions :pairs="detailPairs">
+          <template #instanceId>
+            <span class="code">{{ detail.id }}</span>
+            <CopyButton :text="detail.id" />
           </template>
-          <span v-else class="muted">不触发业务执行</span>
-        </template>
-      </KvDescriptions>
-    </PanelCard>
-
-    <PanelCard title="审批表单">
-      <ApprovalFormDetails :form="detail.approval_form" :schema="page.formSchema" />
-    </PanelCard>
-
-    <PanelCard title="会签时间线">
-      <ApprovalTimeline :executions="timeline" :persons="personNames" />
-    </PanelCard>
+          <template #actionCode>
+            <template v-if="detail.action_code">
+              <span>{{ actionName }}</span>
+              <span class="code action-code">{{ detail.action_code }}</span>
+            </template>
+            <span v-else class="muted">不触发业务执行</span>
+          </template>
+        </KvDescriptions>
+      </template>
+    </ApprovalDetailSections>
   </template>
 
   <div v-else-if="loading" class="loading">正在读取数据…</div>
