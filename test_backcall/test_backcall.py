@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 """联调用的假业务系统：一个支付场景的两端都在这一个脚本里。
 
-它对外暴露两个接口：
+它对外提供发起审批、批量上传、详情查询和支付回调：
 
 ``GET/POST /start``
     发起审批 —— 它扮演业务系统，拿租户 API Key 去调审批中心的
@@ -10,6 +10,12 @@
 ``POST /pay``
     执行支付 —— 它扮演业务系统的收款接口，接收审批通过后审批中心的回调。
     不真扣款，只打印「支付成功了！」，并回一个成功响应。
+
+``POST /_upload``
+    业务方批量上传附件，服务端携带租户 API Key 转发给审批中心，返回 ``file_ids``。
+
+``GET /_status?instance_id=...``
+    以业务方身份查询审批单当前状态、流转节点、审批意见和附件。
 
 ``GET /``
     网页面板：当前配置、改请求体发起审批、实时看收到的回调。不想手敲带参数的
@@ -31,7 +37,8 @@
 
 完整闭环::
 
-    /start → 审批中心（待办）→ 控制台同意 → 审批通过 → 回调 /pay → 打印支付成功
+    /_upload → /start(file_ids) → 审批中心（待办）→ 控制台同意
+    → /_status 查看结果 → 审批通过 → 回调 /pay → 打印支付成功
 
 配置写在脚本同目录的 ``.env`` 里（照 ``.env.example`` 建一份），改一次就不用每次带参数::
 
@@ -71,6 +78,10 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from uuid import UUID
+
+import httpx
+from python_multipart import parse_form
 
 # 这个文件是给人跑的脚本，不是测试用例；不加这行，pytest 会把它当测试模块收集。
 __test__ = False
@@ -100,7 +111,11 @@ AMOUNT_FIELDS = ("JinEr", "amount", "pay_amount", "money", "total_amount", "金�
 
 # /start 请求体里这几个字段是审批中心的一等入参或业务标识，不算审批表单的业务字段：
 # 页头已经显示单号，表单里再来一份只会多一个没有显示名的英文键。
-RESERVED_FIELDS = ("business_key", "payment_id", "title", "applicant_person_id")
+RESERVED_FIELDS = ("business_key", "payment_id", "title", "applicant_person_id", "file_ids")
+
+# 前端文件上传通过假业务系统转发，租户 API Key 不进入浏览器。
+MAX_UPLOAD_REQUEST_BYTES = 101 * 1024 * 1024
+MAX_UPLOAD_FILES = 10
 
 
 def safe_print(text: str = "") -> None:
@@ -268,6 +283,10 @@ PAGE = """<!doctype html>
     line-height: 1.6; resize: vertical;
   }
   textarea:focus { outline: none; border-color: var(--indigo); background: var(--surface); }
+  input[type=file] { max-width: 100%; font: inherit; font-size: 12px; }
+  .files { margin: 10px 0 0; padding-left: 20px; color: var(--ink-2); font-size: 12px; }
+  .files li { margin-top: 4px; }
+  .files button { height: 24px; margin-left: 8px; padding: 0 8px; background: white; color: var(--indigo); }
   .row { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
   button {
     height: 32px; padding: 0 14px; border: 1px solid var(--indigo); border-radius: 4px;
@@ -315,6 +334,13 @@ PAGE = """<!doctype html>
       审批通过后，审批中心把 <code>execution_payload</code>（= <code>payment_id</code> + 这些业务字段）
       原样回调给支付接口。
     </div>
+    <div class="row">
+      <input id="files" type="file" multiple accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx">
+      <button id="upload">批量上传附件</button>
+      <span class="hint">最多 10 个；单文件 20 MiB，整批 100 MiB。选择后直接发起会自动上传，也可先批量上传。</span>
+    </div>
+    <ul id="uploaded-files" class="files"></ul>
+    <pre id="upload-result"></pre>
     <textarea id="payload" rows="6">{
   "payment_id": "PAY-2026-001",
   "JinEr": 500
@@ -326,6 +352,13 @@ PAGE = """<!doctype html>
       </span>
     </div>
     <pre id="result"></pre>
+  </section>
+
+  <section class="card">
+    <h2>审批单核对</h2>
+    <div class="hint">发起成功后可刷新，查看当前状态、流转节点、审批意见和实际绑定的附件。</div>
+    <div class="row"><button id="refresh-status" disabled>刷新审批详情</button></div>
+    <pre id="status-result"></pre>
   </section>
 
   <section class="card">
@@ -358,20 +391,165 @@ for (const [key, label] of Object.entries(LABELS)) {
 const payloadBox = document.getElementById('payload');
 const resultBox = document.getElementById('result');
 const startButton = document.getElementById('start');
+const fileInput = document.getElementById('files');
+const uploadButton = document.getElementById('upload');
+const uploadResultBox = document.getElementById('upload-result');
+const uploadedList = document.getElementById('uploaded-files');
+const statusButton = document.getElementById('refresh-status');
+const statusBox = document.getElementById('status-result');
+let uploadedFiles = [];
+let currentInstanceId = '';
+let submissionBusy = false;
 
+/** 上传和发起共用操作锁，等待期间禁止修改附件或重复提交。 */
+function setSubmissionBusy(busy) {
+  submissionBusy = busy;
+  uploadButton.disabled = busy;
+  startButton.disabled = busy;
+  fileInput.disabled = busy;
+  payloadBox.disabled = busy;
+  renderUploadedFiles();
+}
+
+/** 绘制已经拿到 file_id 的附件；移除只影响本次审批请求。 */
+function renderUploadedFiles() {
+  uploadedList.replaceChildren();
+  for (const file of uploadedFiles) {
+    const item = document.createElement('li');
+    const name = document.createElement('span');
+    name.textContent = file.file_name + ' · ' + (file.size_bytes / 1024).toFixed(1) +
+      ' KiB · file_id：' + file.file_id;
+    const remove = document.createElement('button');
+    remove.type = 'button';
+    remove.textContent = '从本次申请移除';
+    remove.disabled = submissionBusy;
+    remove.addEventListener('click', () => {
+      uploadedFiles = uploadedFiles.filter((candidate) => candidate.file_id !== file.file_id);
+      renderUploadedFiles();
+    });
+    item.append(name, remove);
+    uploadedList.append(item);
+  }
+}
+
+/** 提示所选文件尚未上传，避免把选择文件误认为已经取得 file_id。 */
+fileInput.addEventListener('change', () => {
+  const count = (fileInput.files || []).length;
+  uploadResultBox.className = '';
+  uploadResultBox.textContent = count
+    ? '已选择 ' + count + ' 个待上传文件；发起审批时将先上传。'
+    : '当前没有待上传文件，已上传附件共 ' + uploadedFiles.length + ' 个。';
+});
+
+/** 上传当前所选整批文件；失败向调用者抛出错误，阻止后续发起审批。 */
+async function uploadSelectedFiles() {
+  const selected = Array.from(fileInput.files || []);
+  if (!selected.length) return;
+  uploadResultBox.className = '';
+  uploadResultBox.textContent = '正在上传整批文件…';
+  try {
+    if (uploadedFiles.length + selected.length > 10) {
+      throw new Error('本次审批最多关联 10 个文件。');
+    }
+    const body = new FormData();
+    for (const file of selected) body.append('files', file);
+    const response = await fetch('/_upload', { method: 'POST', body });
+    const data = await response.json();
+    if (!response.ok || !data.ok) throw new Error(data.msg || '上传接口返回失败');
+    // 只有全部文件都获得对应 ID 才更新页面状态，不能把部分结果当作整批成功。
+    if (!Array.isArray(data.file_ids) || !Array.isArray(data.files) ||
+        data.file_ids.length !== selected.length || data.files.length !== selected.length ||
+        data.files.some((file, index) => !file.file_id || file.file_id !== data.file_ids[index])) {
+      throw new Error('上传响应缺少完整的文件 ID，请检查审批中心的响应。');
+    }
+    uploadedFiles = uploadedFiles.concat(data.files);
+    fileInput.value = '';
+    renderUploadedFiles();
+    uploadResultBox.className = 'ok';
+    uploadResultBox.textContent = '整批上传成功，获得 ' + data.file_ids.length + ' 个 file_id。';
+  } catch (err) {
+    uploadResultBox.className = 'bad';
+    uploadResultBox.textContent = '上传失败：' + err.message;
+    throw new Error('附件上传失败，审批尚未发起：' + err.message);
+  }
+}
+
+/** 手动预上传附件，与直接发起时的自动上传共用同一条处理路径。 */
+uploadButton.addEventListener('click', async () => {
+  if (submissionBusy) return;
+  if (!(fileInput.files || []).length) {
+    uploadResultBox.className = 'bad';
+    uploadResultBox.textContent = '请先选择文件。';
+    return;
+  }
+  setSubmissionBusy(true);
+  try {
+    await uploadSelectedFiles();
+  } catch (err) {
+    // 上传函数已显示详细错误；保留所选文件，允许用户修改配置后重试。
+  } finally {
+    setSubmissionBusy(false);
+  }
+});
+
+/** 以业务方身份查询审批详情，展示节点、审批意见及实际绑定的附件。 */
+async function refreshStatus() {
+  if (!currentInstanceId) return;
+  statusButton.disabled = true;
+  statusBox.className = '';
+  statusBox.textContent = '正在查询审批详情…';
+  try {
+    const response = await fetch('/_status?instance_id=' + encodeURIComponent(currentInstanceId));
+    const data = await response.json();
+    if (!data.ok) throw new Error(data.msg || '查询失败');
+    const lines = [
+      '实例状态：' + data.status,
+      '当前节点：' + (data.current_node_name || '—'),
+      '待办任务：' + data.pending_tasks.length,
+      '已绑定附件：' + data.attachments.length,
+    ];
+    for (const file of data.attachments) lines.push('  · ' + file.file_name + '（' + file.file_id + '）');
+    lines.push('', '流转记录：');
+    for (const entry of data.timeline_entries) {
+      lines.push('  · ' + entry.node_execution.node_name + '：' + entry.node_execution.status);
+      for (const record of entry.records) {
+        lines.push('      ' + record.action + '：' + (record.comment || '无审批意见'));
+      }
+    }
+    statusBox.className = 'ok';
+    statusBox.textContent = lines.join('\\n');
+  } catch (err) {
+    statusBox.className = 'bad';
+    statusBox.textContent = '查询失败：' + err.message;
+  } finally {
+    statusButton.disabled = false;
+  }
+}
+
+statusButton.addEventListener('click', refreshStatus);
+
+/** 先完成待上传附件，再携带 file_ids 发起审批；上传失败时不会发送审批请求。 */
 startButton.addEventListener('click', async () => {
+  if (submissionBusy) return;
   let payload;
   try {
     payload = JSON.parse(payloadBox.value);
+    if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
+      throw new Error('请求体必须是 JSON 对象。');
+    }
   } catch (err) {
     resultBox.className = 'bad';
     resultBox.textContent = '请求体不是合法 JSON：' + err.message;
     return;
   }
-  startButton.disabled = true;
+  setSubmissionBusy(true);
   resultBox.className = '';
   resultBox.textContent = '正在发起…';
   try {
+    // 文件选择本身不会上传；必须等待上传成功后再组装审批请求。
+    await uploadSelectedFiles();
+    // 附件 ID 是发起接口的顶层字段，不能放进 approval_form 或 execution_payload。
+    if (uploadedFiles.length) payload.file_ids = uploadedFiles.map((file) => file.file_id);
     const response = await fetch('/start', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -379,13 +557,17 @@ startButton.addEventListener('click', async () => {
     });
     const data = await response.json();
     if (data.ok) {
+      currentInstanceId = data.instance_id;
+      statusButton.disabled = false;
       resultBox.className = 'ok';
       resultBox.textContent =
-        '审批已发起\\n' +
+        (data.idempotent_replay ? '命中幂等，返回已有审批单\\n' : '审批已发起\\n') +
         '实例 ID：' + data.instance_id + '\\n' +
         '当前节点：' + (data.current_node_name || '—') + '\\n' +
+        '提交附件：' + (payload.file_ids || []).length + ' 个\\n' +
         '待办人数：' + (data.pending_approver_person_ids || []).length + '\\n\\n' +
         '去控制台的「审批任务」里同意，通过后这里下面就会出现支付回调。';
+      await refreshStatus();
     } else {
       resultBox.className = 'bad';
       resultBox.textContent = '发起失败：' + (data.msg || '未知原因');
@@ -394,10 +576,11 @@ startButton.addEventListener('click', async () => {
     resultBox.className = 'bad';
     resultBox.textContent = '请求出错：' + err.message;
   } finally {
-    startButton.disabled = false;
+    setSubmissionBusy(false);
   }
 });
 
+/** 把收到的业务回调渲染成时间顺序明确的记录。 */
 function renderEvents(data) {
   document.getElementById('count').textContent = data.count ? '共 ' + data.count + ' 次' : '';
   const box = document.getElementById('events');
@@ -455,6 +638,7 @@ function renderEvents(data) {
   }
 }
 
+/** 定期读取最近回调；服务暂时不可达时保留页面最后一次结果。 */
 async function loadEvents() {
   try {
     const response = await fetch('/_events');
@@ -512,6 +696,60 @@ def call_center(options: argparse.Namespace, body: dict[str, Any]) -> tuple[int,
         return 0, {"code": -1, "msg": f"审批中心返回的不是 JSON：{exc}"}
 
 
+def upload_to_center(options: argparse.Namespace, files: list[Any]) -> tuple[int, dict[str, Any]]:
+    """把业务方选中的整批文件转发给审批中心，返回完整响应信封。"""
+
+    if not options.api_key:
+        return 400, {"msg": "还没有配置租户 API Key"}
+
+    multipart_files = []
+    for uploaded in files:
+        # 解析器已经把文件暂存在内存或临时目录；转发前回到文件开头。
+        uploaded.file_object.seek(0)
+        name = (uploaded.file_name or b"unnamed").decode("utf-8", errors="replace")
+        content_type = uploaded.content_type or "application/octet-stream"
+        multipart_files.append(("files", (name, uploaded.file_object, content_type)))
+
+    try:
+        with httpx.Client(timeout=120) as client:
+            response = client.post(
+                f"{options.center.rstrip('/')}/api/files",
+                headers={"X-API-Key": options.api_key},
+                files=multipart_files,
+            )
+        return response.status_code, response.json()
+    except httpx.RequestError as exc:
+        return 0, {"msg": f"连不上审批中心 {options.center}：{exc.__class__.__name__}"}
+    except ValueError:
+        return 0, {"msg": "审批中心上传接口返回的不是 JSON"}
+
+
+def detail_from_center(options: argparse.Namespace, instance_id: str) -> tuple[int, dict[str, Any]]:
+    """以同一个租户身份查询审批详情，供联调面板核对状态和附件。"""
+
+    try:
+        normalized_id = str(UUID(instance_id))
+    except ValueError:
+        return 400, {"msg": "instance_id 不是有效的 UUID"}
+    request = urllib.request.Request(
+        f"{options.center.rstrip('/')}/api/approval-instances/{normalized_id}",
+        headers={"X-API-Key": options.api_key},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.status, json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            return exc.code, json.loads(raw)
+        except json.JSONDecodeError:
+            return exc.code, {"msg": raw[:200] or str(exc.reason)}
+    except urllib.error.URLError as exc:
+        return 0, {"msg": f"连不上审批中心 {options.center}（{exc.reason}）"}
+    except json.JSONDecodeError:
+        return 0, {"msg": "审批中心详情接口返回的不是 JSON"}
+
+
 def list_catalog(options: argparse.Namespace) -> None:
     """启动时用管理密钥列一下可选的审批流与业务动作，省得去控制台抄 ID。"""
 
@@ -551,13 +789,15 @@ def list_catalog(options: argparse.Namespace) -> None:
 
 
 def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
-    """生成请求处理器：/start 发起审批，/pay 收支付回调，其余路径只做提示。"""
+    """生成发起审批、批量上传、详情查询及业务回调的请求处理器。"""
 
     class FakeBusinessHandler(BaseHTTPRequestHandler):
         protocol_version = "HTTP/1.1"
         server_version = "test-backcall"
 
         def do_GET(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler 规定的命名
+            """提供面板、回调记录、审批详情和快捷发起入口。"""
+
             if same_path(self.path, "/"):
                 self._page()
             elif same_path(self.path, "/favicon.ico"):
@@ -567,12 +807,19 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
                 self.end_headers()
             elif same_path(self.path, "/_events"):
                 self._events()
+            elif same_path(self.path, "/_status"):
+                self._status()
             elif same_path(self.path, "/start"):
                 self._start(payload_from_query(self.path))
             else:
                 self._callback()
 
         def do_POST(self) -> None:  # noqa: N802
+            """优先按流接收文件，其余 POST 请求按 JSON 回调或审批处理。"""
+
+            if same_path(self.path, "/_upload"):
+                self._upload()
+                return
             length = int(self.headers.get("Content-Length") or 0)
             raw_body = self.rfile.read(length) if length else b""
             if same_path(self.path, "/start"):
@@ -581,12 +828,18 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
                 self._callback(parse_json(raw_body))
 
         def do_PUT(self) -> None:  # noqa: N802
+            """按业务执行回调处理 PUT 请求，便于测试错误 HTTP 方法。"""
+
             self._callback()
 
         def do_PATCH(self) -> None:  # noqa: N802
+            """按业务执行回调处理 PATCH 请求。"""
+
             self._callback()
 
         def do_DELETE(self) -> None:  # noqa: N802
+            """按业务执行回调处理 DELETE 请求。"""
+
             self._callback()
 
         # ------------------------------------------------------------------
@@ -620,11 +873,97 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
                 body = {"count": COUNT, "events": list(reversed(EVENTS))}
             self._json(200, body)
 
+        def _upload(self) -> None:
+            """解析浏览器上传的文件并整批转发，不向浏览器暴露租户密钥。"""
+
+            content_type = self.headers.get("Content-Type", "")
+            if not content_type.lower().startswith("multipart/form-data;"):
+                self._json(415, {"ok": False, "msg": "请使用 multipart/form-data 上传文件"})
+                return
+            try:
+                content_length = int(self.headers.get("Content-Length", ""))
+            except ValueError:
+                self._json(411, {"ok": False, "msg": "上传请求需要 Content-Length"})
+                return
+            if content_length <= 0 or content_length > MAX_UPLOAD_REQUEST_BYTES:
+                self._json(413, {"ok": False, "msg": "整批上传请求不能超过 101 MiB"})
+                return
+
+            files: list[Any] = []
+            ignored_files: list[Any] = []
+
+            def collect_file(uploaded: Any) -> None:
+                """区分 files 字段与其他文件，等解析完成后统一关闭。"""
+
+                if uploaded.field_name == b"files":
+                    files.append(uploaded)
+                else:
+                    ignored_files.append(uploaded)
+
+            try:
+                # 解析器按 Content-Length 分块读取，文件大时自动使用临时文件。
+                parse_form(
+                    {
+                        "Content-Type": content_type.encode("ascii", errors="replace"),
+                        "Content-Length": str(content_length).encode("ascii"),
+                    },
+                    self.rfile,
+                    None,
+                    collect_file,
+                )
+                if not 1 <= len(files) <= MAX_UPLOAD_FILES:
+                    self._json(422, {"ok": False, "msg": "一次须上传 1 至 10 个文件"})
+                    return
+
+                status, envelope = upload_to_center(options, files)
+                data = envelope.get("data") or {}
+                if not isinstance(data, dict) or not data.get("file_ids"):
+                    reason = message_of(envelope, status)
+                    safe_print(f"× 附件上传失败（HTTP {status}）：{reason}")
+                    self._json(status or 502, {"ok": False, "msg": reason})
+                    return
+                safe_print(f"√ 已批量上传 {len(data['file_ids'])} 个文件到审批中心")
+                self._json(200, {"ok": True, "file_ids": data["file_ids"], "files": data.get("files") or []})
+            except Exception as exc:
+                safe_print(f"× 解析上传请求失败：{exc.__class__.__name__}：{exc}")
+                self._json(400, {"ok": False, "msg": "上传请求格式不正确"})
+            finally:
+                for uploaded in files + ignored_files:
+                    uploaded.close()
+
+        def _status(self) -> None:
+            """查询审批中心详情并返回面板需要的状态、节点和附件。"""
+
+            query = urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+            instance_id = (query.get("instance_id") or [""])[0]
+            if not instance_id or not options.api_key:
+                self._json(400, {"ok": False, "msg": "需要 instance_id 和租户 API Key"})
+                return
+            status, envelope = detail_from_center(options, instance_id)
+            data = envelope.get("data") or {}
+            if not isinstance(data, dict) or not data.get("id"):
+                self._json(status or 502, {"ok": False, "msg": message_of(envelope, status)})
+                return
+            self._json(
+                200,
+                {
+                    "ok": True,
+                    "instance_id": data["id"],
+                    "status": data.get("status"),
+                    "current_node_name": (data.get("current_node") or {}).get("node_name"),
+                    "attachments": data.get("attachments") or [],
+                    "timeline_entries": data.get("timeline_entries") or [],
+                    "pending_tasks": data.get("pending_tasks") or [],
+                },
+            )
+
         # ------------------------------------------------------------------
         # /start：发起审批
         # ------------------------------------------------------------------
 
         def _start(self, payload: dict[str, Any]) -> None:
+            """把业务单据转成审批请求，并把附件 ID 放在请求顶层。"""
+
             if not isinstance(payload, dict):
                 payload = {}
 
@@ -647,6 +986,10 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
             )
             title = str(payload.get("title") or f"付款申请 {payment_id}")
             applicant = payload.get("applicant_person_id")
+            file_ids = payload.get("file_ids") or []
+            if not isinstance(file_ids, list):
+                self._json(400, {"ok": False, "msg": "file_ids 必须是数组"})
+                return
 
             # 业务字段进审批表单（审批人看得到金额）；单号/标题/发起人剔掉 —— 它们是审批中心的
             # 一等入参，页头已经显示，放进表单只会多一行没有显示名的英文键。
@@ -665,6 +1008,7 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
                 # 注意别在这里再放一个 business_key：那是审批中心的字段名，出现两份只会让人
                 # 分不清哪个是"审批中心的单号"、哪个是"业务系统的单号"。
                 "execution_payload": {"payment_id": payment_id, **form_payload},
+                "file_ids": file_ids,
             }
 
             safe_print("─" * 78)
@@ -713,6 +1057,7 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
                     "status": data.get("status"),
                     "current_node_name": data.get("current_node_name"),
                     "pending_approver_person_ids": approvers,
+                    "idempotent_replay": bool(data.get("idempotent_replay")),
                 },
             )
 
@@ -743,7 +1088,11 @@ def make_handler(options: argparse.Namespace) -> type[BaseHTTPRequestHandler]:
             skip = {"host", "content-type", "content-length", "accept-encoding", "connection", "user-agent"}
             for name in self.headers:
                 if name.lower() not in skip:
-                    lines.append(f"  {name}: {self.headers[name]}")
+                    value = self.headers[name]
+                    # 联调日志可能被保存或共享，认证头只能打印脱敏值。
+                    if name.lower() in {options.token_header.lower(), "authorization", "x-api-key"}:
+                        value = mask(value)
+                    lines.append(f"  {name}: {value}")
 
             if options.expect_token:
                 if options.expect_token in self.headers.get(options.token_header, ""):
@@ -969,7 +1318,7 @@ def main() -> int:
     safe_print(f"  支付回调：POST {base}{options.pay_path}")
     safe_print(f"  回调返回：{options.status}{f'，先拖 {options.delay} 秒' if options.delay else ''}")
     if options.expect_token:
-        safe_print(f"  核对：{options.token_header} 里应含 {options.expect_token}")
+        safe_print(f"  核对：{options.token_header} 里应含 {mask(options.expect_token)}")
     safe_print("")
     # 一眼看出配置是从哪儿来的，省得改了 .env 却没生效还在这儿找原因
     safe_print(f"配置来源：{options.env_path}{'' if options.env_found else '（没有这个文件，走内置默认值）'}")
