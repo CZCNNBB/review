@@ -5,6 +5,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { safe } from '@/api/http'
 import { actionApi } from '@/api/modules/action'
 import { approvalApi } from '@/api/modules/approval'
+import { fileApi, type UploadedFile } from '@/api/modules/file'
 import type { StartInstanceInput } from '@/api/modules/approval'
 import { processApi } from '@/api/modules/process'
 import type {
@@ -122,6 +123,9 @@ const resultOpen = ref(false)
 const startedResult = ref<StartedInstance | null>(null)
 const curlOpen = ref(false)
 const curlCommand = ref('')
+const selectedFiles = ref<File[]>([])
+const uploadedFiles = ref<UploadedFile[]>([])
+const uploadingFiles = ref(false)
 
 const fields = computed<DynamicFieldSpec[]>(() => [
   {
@@ -217,6 +221,54 @@ async function verifyKey(): Promise<void> {
 
 watch(effectiveKey, () => void verifyKey(), { immediate: true })
 
+// 密钥切换可能意味着租户切换，旧租户上传的 file_id 不能继续用于新申请。
+watch(effectiveKey, () => {
+  selectedFiles.value = []
+  uploadedFiles.value = []
+})
+
+/** 从文件选择器记录本批文件，实际上传由用户点击按钮触发。 */
+function selectFiles(event: Event): void {
+  const input = event.target as HTMLInputElement
+  selectedFiles.value = Array.from(input.files || [])
+  input.value = ''
+}
+
+/** 把本批文件上传到审批中心，并保留返回的 file_id 供发起审批使用。 */
+async function uploadFiles(): Promise<void> {
+  if (!effectiveKey.value) {
+    toastError('请先选择可用的租户密钥')
+    return
+  }
+  if (!selectedFiles.value.length) {
+    toastError('请先选择文件')
+    return
+  }
+  if (uploadedFiles.value.length + selectedFiles.value.length > 10) {
+    toastError('每张审批单最多关联 10 个文件')
+    return
+  }
+  uploadingFiles.value = true
+  const uploadKey = effectiveKey.value
+  try {
+    const result = await fileApi.upload(selectedFiles.value, uploadKey)
+    // 上传期间切换租户后不能把旧租户文件 ID 带进当前申请。
+    if (uploadKey !== effectiveKey.value) return
+    uploadedFiles.value = [...uploadedFiles.value, ...result.files]
+    selectedFiles.value = []
+    toastOk(`已上传 ${result.file_ids.length} 个文件`)
+  } catch (error) {
+    reportFailure(error)
+  } finally {
+    uploadingFiles.value = false
+  }
+}
+
+/** 从本次审批请求移除文件引用，不删除服务器中已经上传的文件。 */
+function removeUploadedFile(fileId: string): void {
+  uploadedFiles.value = uploadedFiles.value.filter((file) => file.file_id !== fileId)
+}
+
 /**
  * 「使用」按钮。
  * 空值表示弃用临时密钥、回到自动借用：旧版这里只弹一句「请先填入密钥」，
@@ -250,6 +302,9 @@ function payloadOf(): StartInstanceInput {
   }
   const actionCode = String(values.value.action_code || '')
   if (actionCode) payload.action_code = actionCode
+  if (uploadedFiles.value.length) {
+    payload.file_ids = uploadedFiles.value.map((file) => file.file_id)
+  }
   return payload
 }
 
@@ -411,6 +466,31 @@ async function submit(): Promise<void> {
 
       <DynamicForm ref="formRef" v-model="values" :fields="fields" :error="formError" />
 
+      <div class="attachment-upload">
+        <label class="field__label" for="approval-files">申请材料（可选）</label>
+        <div class="attachment-upload__controls">
+          <input
+            id="approval-files"
+            type="file"
+            multiple
+            accept=".pdf,.png,.jpg,.jpeg,.docx,.xlsx"
+            @change="selectFiles"
+          />
+          <ElButton :loading="uploadingFiles" @click="uploadFiles">批量上传</ElButton>
+        </div>
+        <p class="field__hint">
+          先上传取得文件 ID，再随审批单提交。单文件最多 20 MiB，最多 10 个。
+        </p>
+        <ul v-if="uploadedFiles.length" class="attachment-upload__list">
+          <li v-for="file in uploadedFiles" :key="file.file_id">
+            <span>{{ file.file_name }} · {{ (file.size_bytes / 1024).toFixed(1) }} KiB</span>
+            <button class="btn btn--sm" type="button" @click="removeUploadedFile(file.file_id)">
+              从本次申请移除
+            </button>
+          </li>
+        </ul>
+      </div>
+
       <div class="submit-row">
         <ElButton type="primary" :loading="submitting" @click="submit">发起审批</ElButton>
       </div>
@@ -445,5 +525,29 @@ async function submit(): Promise<void> {
   display: flex;
   gap: 8px;
   margin-top: 14px;
+}
+.attachment-upload {
+  margin-top: var(--sp-5);
+  padding: var(--sp-4);
+  border: 1px solid var(--rule);
+  border-radius: var(--radius-md);
+}
+.attachment-upload__controls {
+  display: flex;
+  align-items: center;
+  gap: var(--sp-3);
+  flex-wrap: wrap;
+}
+.attachment-upload__list {
+  display: grid;
+  gap: var(--sp-2);
+  padding: 0;
+  list-style: none;
+}
+.attachment-upload__list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--sp-3);
 }
 </style>

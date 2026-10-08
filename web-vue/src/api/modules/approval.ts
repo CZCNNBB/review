@@ -15,6 +15,7 @@ export interface StartInstanceInput {
   action_code?: string | null
   approval_form?: Record<string, unknown>
   execution_payload?: Record<string, unknown>
+  file_ids?: string[]
 }
 
 export interface TaskDecisionInput {
@@ -46,5 +47,4 @@ export const approvalApi = {
 
   instance: (id: string, apiKey?: string) =>
     api.get<ApprovalInstanceDetail>(endpoints.approvalInstance(id), 'apikey', apiKey),
-
 }

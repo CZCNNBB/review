@@ -1,6 +1,7 @@
 # Web API
 fastapi==0.121.3
 uvicorn[standard]==0.38.0
+python-multipart>=0.0.20,<1
 
 # Configuration
 python-dotenv==1.2.1
@@ -20,3 +21,5 @@ cryptography==49.0.0
 # HTTP integration tests
 httpx==0.28.1
 
+# S3-compatible private object storage; local development can use filesystem storage.
+boto3>=1.35,<2

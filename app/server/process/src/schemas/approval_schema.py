@@ -26,6 +26,7 @@ class ApprovalStartRequest(BaseModel):
     action_code: str | None = Field(default=None, max_length=100)
     approval_form: dict[str, Any] = Field(default_factory=dict)
     execution_payload: dict[str, Any] = Field(default_factory=dict)
+    file_ids: list[UUID] = Field(default_factory=list, max_length=10)
 
     @field_validator("business_key")
     @classmethod
@@ -150,6 +151,16 @@ class ApprovalTimelineEntryResponse(BaseModel):
     records: list[ApprovalRecordResponse]
 
 
+class ApprovalAttachmentResponse(BaseModel):
+    """审批单附件的展示元数据，不暴露对象存储位置。"""
+
+    file_id: UUID
+    file_name: str
+    content_type: str
+    size_bytes: int
+    uploaded_at: datetime
+
+
 class ApprovalInstanceDetailResponse(BaseModel):
     """审批详情，供后台详情页展示运行状态和处理过程。"""
 
@@ -165,6 +176,7 @@ class ApprovalInstanceDetailResponse(BaseModel):
     action_code: str | None
     status: str
     approval_form: dict[str, Any]
+    attachments: list[ApprovalAttachmentResponse]
     current_node: ApprovalNodeExecutionResponse | None
     node_executions: list[ApprovalNodeExecutionResponse]
     tasks: list[ApprovalTaskResponse]

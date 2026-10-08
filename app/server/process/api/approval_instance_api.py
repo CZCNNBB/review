@@ -2,12 +2,13 @@
 
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlmodel import Session
 
 from app.common.db.postgres_db import get_postgres_engine
 from app.common.schemas.result import Result
 from app.server.integration.api import raise_business_access_http_error
+from app.server.file.src.service import FileValidationError
 from app.server.integration.src.service.business_access_service import (
     BusinessAccessService,
 )
@@ -25,6 +26,7 @@ from app.server.process.api.approval_view_builder import (
 from app.server.process.api.process_api import raise_process_http_error
 from app.server.process.src.constants import TASK_STATUS_PENDING
 from app.server.process.src.schemas.approval_schema import (
+    ApprovalAttachmentResponse,
     ApprovalInstanceDetailResponse,
     ApprovalInstanceStartedResponse,
     ApprovalNodeExecutionResponse,
@@ -144,6 +146,16 @@ def build_detail_response(view: InstanceDetailView) -> ApprovalInstanceDetailRes
         action_code=view.instance.action_code,
         status=view.instance.status,
         approval_form=dict(view.instance.approval_form_json or {}),
+        attachments=[
+            ApprovalAttachmentResponse(
+                file_id=file.id,
+                file_name=file.file_name,
+                content_type=file.content_type,
+                size_bytes=file.size_bytes,
+                uploaded_at=file.uploaded_at,
+            )
+            for file in view.attachments
+        ],
         current_node=current_node,
         node_executions=node_responses,
         tasks=task_responses,
@@ -241,6 +253,8 @@ def start_approval_instance(
         ProcessValidationError,
     ) as exc:
         raise_process_http_error(exc)
+    except FileValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (
         TenantResourceAccessError,
         BusinessActionNotFoundError,

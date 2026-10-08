@@ -9,6 +9,7 @@ import { approvalApi } from '@/api/modules/approval'
 import { orgApi } from '@/api/modules/org'
 import { processApi } from '@/api/modules/process'
 import type {
+  ApprovalAttachment,
   ApprovalInstanceDetail,
   ApprovalRecord,
   ApprovalTask,
@@ -20,6 +21,7 @@ import type {
 } from '@/api/types'
 import ApprovalDetailHero from '@/components/common/ApprovalDetailHero.vue'
 import ApprovalDetailSections from '@/components/common/ApprovalDetailSections.vue'
+import ApprovalAttachments from '@/components/common/ApprovalAttachments.vue'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution, TimelineRecord } from '@/components/common/ApprovalTimeline.vue'
 import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
@@ -56,6 +58,7 @@ interface InstanceDetail {
   duration_ms: number | null
   current_node_name: string | null
   approval_form: Record<string, unknown>
+  attachments: ApprovalAttachment[]
   pending_tasks: ApprovalTask[]
 }
 
@@ -95,6 +98,7 @@ function normalizeInstance(source: ApprovalInstanceDetail): InstanceDetail {
     duration_ms: source.duration_ms,
     current_node_name: source.current_node?.node_name || null,
     approval_form: source.approval_form,
+    attachments: source.attachments,
     pending_tasks: source.pending_tasks,
   }
 }
@@ -353,8 +357,11 @@ onMounted(refresh)
         <ApprovalTimeline :executions="page.executions" :persons="personNames" />
       </template>
 
-      <template v-if="detail.action_code" #extra>
-        <PanelCard title="业务执行">
+      <template v-if="detail.attachments.length || detail.action_code" #extra>
+        <PanelCard v-if="detail.attachments.length" title="申请材料">
+          <ApprovalAttachments :attachments="detail.attachments" />
+        </PanelCard>
+        <PanelCard v-if="detail.action_code" title="业务执行">
           <template #actions>
             <a v-if="execution" class="btn btn--sm" :href="`#/executions/${execution.id}`">
               查看完整记录

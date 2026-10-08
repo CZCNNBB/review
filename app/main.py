@@ -19,6 +19,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from app.server.file.api import router as file_router
 from app.server.integration.api import router as integration_router
 from app.server.organization.api import router as organization_router
 from app.server.process.api import router as process_router
@@ -92,6 +93,7 @@ def create_app() -> FastAPI:
     
     # 注册各微服务模块的接口层。每个服务只通过自己的 api 聚合出口对外暴露接口。
     app.include_router(tenant_router, prefix="/api", tags=["租户模块"])
+    app.include_router(file_router, prefix="/api", tags=["文件模块"])
     app.include_router(organization_router, prefix="/api", tags=["人员与组织模块"])
     app.include_router(process_router, prefix="/api", tags=["审批流维护模块"])
     app.include_router(integration_router, prefix="/api", tags=["业务接入模块"])

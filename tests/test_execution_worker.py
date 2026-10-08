@@ -104,6 +104,7 @@ class WorkerTestCase(unittest.TestCase):
                     "organization": None,
                     "process": None,
                     "integration": None,
+                    "file": None,
                 }
             },
         )

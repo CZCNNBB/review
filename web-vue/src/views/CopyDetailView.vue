@@ -10,6 +10,7 @@ import { processApi } from '@/api/modules/process'
 import type { ApprovalInstanceDetail, BusinessAction, Person } from '@/api/types'
 import ApprovalDetailHero from '@/components/common/ApprovalDetailHero.vue'
 import ApprovalDetailSections from '@/components/common/ApprovalDetailSections.vue'
+import ApprovalAttachments from '@/components/common/ApprovalAttachments.vue'
 import ApprovalFormDetails from '@/components/common/ApprovalFormDetails.vue'
 import ApprovalTimeline from '@/components/common/ApprovalTimeline.vue'
 import type { TimelineExecution } from '@/components/common/ApprovalTimeline.vue'
@@ -149,6 +150,12 @@ onMounted(refresh)
 
       <template #timeline>
         <ApprovalTimeline :executions="timeline" :persons="personNames" />
+      </template>
+
+      <template v-if="detail.attachments.length" #extra>
+        <PanelCard title="申请材料">
+          <ApprovalAttachments :attachments="detail.attachments" />
+        </PanelCard>
       </template>
 
       <template #metadata>

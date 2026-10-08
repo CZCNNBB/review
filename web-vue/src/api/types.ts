@@ -276,6 +276,15 @@ export interface ApprovalTimelineEntry {
   records: ApprovalRecord[]
 }
 
+/** 已绑定到审批单的文件元数据。 */
+export interface ApprovalAttachment {
+  file_id: string
+  file_name: string
+  content_type: string
+  size_bytes: number
+  uploaded_at: string
+}
+
 export interface ApprovalInstanceDetail {
   id: string
   process_id: string
@@ -289,6 +298,7 @@ export interface ApprovalInstanceDetail {
   action_code: string | null
   status: string
   approval_form: Record<string, unknown>
+  attachments: ApprovalAttachment[]
   current_node: ApprovalNodeExecution | null
   node_executions: ApprovalNodeExecution[]
   tasks: ApprovalTask[]

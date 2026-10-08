@@ -7,6 +7,8 @@ from uuid import UUID
 from sqlalchemy.exc import IntegrityError
 from sqlmodel import Session
 
+from app.server.file.src.models import FileRecord
+from app.server.file.src.service import FileService
 from app.server.organization.src.service.organization_service import OrganizationService
 from app.server.process.src.constants import (
     INSTANCE_STATUS_RUNNING,
@@ -67,6 +69,7 @@ class InstanceDetailView:
     node_executions: tuple[ApprovalNodeExecution, ...]
     tasks: tuple[ApprovalTask, ...]
     records: tuple[ApprovalRecord, ...]
+    attachments: tuple[FileRecord, ...]
 
 
 @dataclass(frozen=True)
@@ -93,6 +96,7 @@ class ApprovalInstanceService:
         process_repository: ProcessRepository | None = None,
         organization_service: OrganizationService | None = None,
         engine: ApprovalEngine | None = None,
+        file_service: FileService | None = None,
     ):
         """初始化审批实例服务并允许测试注入依赖。"""
 
@@ -103,6 +107,7 @@ class ApprovalInstanceService:
             repository=self.repository,
             organization_service=self.organization_service,
         )
+        self.file_service = file_service or FileService()
 
     # ------------------------------------------------------------------
     # 发起审批
@@ -163,6 +168,13 @@ class ApprovalInstanceService:
             self._ensure_same_request(existing_instance, request_digest)
             return self._build_started(existing_instance, db, idempotent_replay=True)
 
+        # 附件在创建实例前整组校验；任一 file_id 无效时不能留下半张审批单。
+        attachment_files = self.file_service.validate_references(
+            request.file_ids,
+            tenant_id,
+            db,
+        )
+
         process = self.process_repository.get_process_for_update(process_id, db)
         if process is None:
             raise ProcessNotFoundError("审批流不存在")
@@ -202,6 +214,7 @@ class ApprovalInstanceService:
             status=INSTANCE_STATUS_RUNNING,
         )
         self.repository.add_instance(instance, db)
+        self.file_service.bind_to_instance(instance.id, attachment_files, db)
 
         try:
             # 实例、首条节点执行记录和首批审批任务在同一个事务中写入，此处只 flush。
@@ -337,6 +350,7 @@ class ApprovalInstanceService:
             ),
             tasks=tuple(self.repository.list_tasks_by_instance(instance.id, db)),
             records=tuple(self.repository.list_records_by_instance(instance.id, db)),
+            attachments=tuple(self.file_service.list_for_instance(instance.id, db)),
         )
 
     # ------------------------------------------------------------------
@@ -387,7 +401,7 @@ class ApprovalInstanceService:
         另一次申请，一并纳入比对。
         """
 
-        return {
+        payload = {
             "business_key": request.business_key,
             "title": request.title,
             "applicant_person_id": (
@@ -399,6 +413,10 @@ class ApprovalInstanceService:
             "approval_form": request.approval_form,
             "execution_payload": request.execution_payload,
         }
+        # 保持旧请求的摘要不变，只有携带附件时才把附件顺序纳入幂等比较。
+        if request.file_ids:
+            payload["file_ids"] = [str(file_id) for file_id in request.file_ids]
+        return payload
 
     @staticmethod
     def _ensure_same_request(
